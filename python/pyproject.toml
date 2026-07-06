@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "myuri"
+version = "2.0.0"
+description = "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, or custom)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Jake Writer" }]
+requires-python = ">=3.9"
+keywords = ["playwright", "cdp", "automation", "human-like", "mouse", "cursor", "typing", "scroll", "anti-detection"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+playwright = ["playwright>=1.40"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "playwright>=1.40", "mypy>=1.8", "ruff>=0.5"]
+
+[project.urls]
+Homepage = "https://github.com/JWriter20/myuri"
+Issues = "https://github.com/JWriter20/myuri/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/myuri"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../assets/trajectories.json.gz" = "myuri/assets/trajectories.json.gz"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

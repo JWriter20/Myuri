@@ -1,0 +1,122 @@
+# myuri
+
+Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
+
+`myuri` generates realistic mouse trajectories (from recorded human motion), fitted
+scroll dynamics, and Markov-model typing with natural errors and corrections. It does
+**not** talk to a browser itself. You inject a small **Driver** — the functions that
+actually move the mouse, press keys, scroll, and read the DOM — so myuri works with
+Playwright, Puppeteer, raw CDP, or anything you can wrap.
+
+Available for **TypeScript/JavaScript** (`js/`) and **Python** (`python/`) with a mirrored API.
+
+```
+┌──────────────────────────────┐
+│  myuri core (pure, portable) │  trajectories · scroll model · Markov typing · seeded RNG
+└──────────────┬───────────────┘
+               │ Driver interface
+   ┌───────────┼───────────┬─────────────┐
+ Playwright   CDP     Puppeteer      your custom
+ (default)  wrapper    wrapper         driver
+```
+
+## Why a Driver?
+
+Older versions hard-coded Playwright/CDP "interaction strategies". myuri instead takes a
+single `Driver` object with two groups of capabilities:
+
+- **Input** — `move`, `click`, `down`, `up`, `wheel`, `press`, `insertText`, `setClipboard`
+- **Query** — `evaluate(fn, arg)`, `boundingBox(selector)`, `waitForElement(selector, opts)`,
+  `viewport()`, `isClosed()`
+
+Every DOM measurement myuri needs (element boxes, occlusion, scroll offsets, viewport)
+runs through `evaluate`, so any driver that can run JS in the page and dispatch input works.
+Convenience wrappers ship for the common cases, so most users inject nothing.
+
+## TypeScript
+
+```ts
+import { createCursor } from 'myuri'
+import { chromium } from 'playwright'
+
+const page = await (await chromium.launch()).newPage()
+await page.goto('https://example.com')
+
+// Playwright driver is inferred from the page object.
+const cursor = createCursor(page, { seed: 1234 })
+
+await cursor.move('#username')
+await cursor.click('#username')
+await cursor.type('hello@example.com')
+await cursor.scroll('#footer')
+await cursor.dispose()          // detaches CDP sessions, clears timers
+```
+
+Bring your own driver:
+
+```ts
+import { createCursor, defineDriver } from 'myuri'
+
+const cursor = createCursor({
+  driver: defineDriver({
+    move: (x, y) => myBackend.mouseMove(x, y),
+    click: () => myBackend.mouseClick(),
+    wheel: (dx, dy) => myBackend.wheel(dx, dy),
+    press: (key, opts) => myBackend.press(key, opts),
+    insertText: (t) => myBackend.type(t),
+    down: (k) => myBackend.keyDown(k),
+    up: (k) => myBackend.keyUp(k),
+    setClipboard: (t) => myBackend.clipboard(t),
+    evaluate: (fn, arg) => myBackend.eval(fn, arg),
+    boundingBox: (sel) => myBackend.box(sel),
+    waitForElement: (sel, o) => myBackend.wait(sel, o),
+    viewport: () => myBackend.viewport(),
+    isClosed: () => myBackend.closed(),
+  }),
+})
+```
+
+Prebuilt wrappers:
+
+```ts
+import { playwrightDriver, cdpDriver, puppeteerDriver } from 'myuri/drivers'
+const cursor = createCursor({ driver: cdpDriver(page) })
+```
+
+## Python
+
+```python
+from myuri import create_cursor
+from playwright.async_api import async_playwright
+
+async with async_playwright() as p:
+    page = await (await p.chromium.launch()).new_page()
+    await page.goto("https://example.com")
+
+    cursor = create_cursor(page, seed=1234)   # PlaywrightDriver inferred
+    await cursor.move("#username")
+    await cursor.click("#username")
+    await cursor.type("hello@example.com")
+    await cursor.scroll("#footer")
+    await cursor.dispose()
+```
+
+Custom driver: subclass `myuri.Driver` (or pass any object implementing the protocol) and
+hand it to `create_cursor(driver=...)`.
+
+## Determinism
+
+Both packages use a seeded Mulberry32 PRNG. Pass `seed` to reproduce identical mouse paths,
+scroll dynamics, and typing rhythm; read it back with `cursor.get_seed()` / `cursor.getSeed()`.
+
+## Repo layout
+
+| Path | What |
+|------|------|
+| `js/` | npm package `myuri` |
+| `python/` | PyPI package `myuri` |
+| `assets/trajectories.json.gz` | shared recorded-motion dataset (single source of truth) |
+
+## License
+
+MIT

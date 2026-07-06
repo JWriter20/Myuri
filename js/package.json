@@ -1,0 +1,73 @@
+{
+  "name": "myuri",
+  "version": "2.0.0",
+  "description": "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, Puppeteer, or custom).",
+  "homepage": "https://github.com/JWriter20/myuri#readme",
+  "bugs": {
+    "url": "https://github.com/JWriter20/myuri/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JWriter20/myuri.git",
+    "directory": "js"
+  },
+  "license": "MIT",
+  "author": "Jake Writer",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./drivers": {
+      "types": "./dist/drivers/index.d.ts",
+      "import": "./dist/drivers/index.js"
+    },
+    "./settings": {
+      "types": "./dist/settings.d.ts",
+      "import": "./dist/settings.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "playwright",
+    "puppeteer",
+    "cdp",
+    "automation",
+    "human-like",
+    "mouse",
+    "cursor",
+    "typing",
+    "scroll",
+    "anti-detection"
+  ],
+  "dependencies": {
+    "pako": "^2.1.0"
+  },
+  "peerDependencies": {
+    "playwright-core": ">=1.40.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright-core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pako": "^2.0.4",
+    "playwright-core": "^1.58.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

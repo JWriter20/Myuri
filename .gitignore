@@ -1,0 +1,27 @@
+# Node
+node_modules/
+js/dist/
+*.tsbuildinfo
+
+# Python
+python/.venv/
+venv/
+__pycache__/
+*.py[cod]
+python/build/
+python/dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / editor / OS
+.env
+.npmrc
+.vscode/
+.idea/
+.DS_Store
+
+# Test artifacts
+scripts/IDEAL_SCROLLS.json
+scripts/recorded-scrolls.raw.json
