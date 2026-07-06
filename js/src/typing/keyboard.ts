@@ -1,0 +1,141 @@
+/**
+ * Keyboard layout model with distance calculations and neighbor-key lookups.
+ * Ported from HumanTyping (https://github.com/Lax3n/HumanTyping)
+ */
+
+import { FAR_KEY_THRESHOLD } from './config.js'
+import type { Rng } from '../rng.js'
+
+export class KeyboardLayout {
+  private layoutName: string
+  private grid: string[][]
+  private posMap: Map<string, [number, number]>
+  private directAccents: Set<string>
+  private composedAccents: Set<string>
+
+  constructor(layoutName: string = 'qwerty') {
+    this.layoutName = layoutName
+    this.grid = this.loadLayout(layoutName)
+    this.posMap = this.buildPosMap()
+
+    if (layoutName === 'azerty') {
+      this.directAccents = new Set('éèàùç'.split(''))
+      this.composedAccents = new Set('âêîôûäëïöü'.split(''))
+    } else {
+      this.directAccents = new Set()
+      this.composedAccents = new Set('âêîôûäëïöüéèàùç'.split(''))
+    }
+  }
+
+  private loadLayout(name: string): string[][] {
+    if (name === 'qwerty') {
+      return [
+        [...'`1234567890-='],
+        [...'qwertyuiop[]\\'],
+        [..."asdfghjkl;'"],
+        [...'zxcvbnm,./']
+      ]
+    } else if (name === 'azerty') {
+      return [
+        [...'&é"\'(-è_çà)='],
+        [...'azertyuiop^$'],
+        [...'qsdfghjklmù*'],
+        [...'wxcvbn,;:!']
+      ]
+    }
+    throw new Error(`Unsupported layout: '${name}'. Use 'qwerty' or 'azerty'.`)
+  }
+
+  private buildPosMap(): Map<string, [number, number]> {
+    const mapping = new Map<string, [number, number]>()
+    for (let r = 0; r < this.grid.length; r++) {
+      for (let c = 0; c < this.grid[r].length; c++) {
+        mapping.set(this.grid[r][c], [r, c])
+      }
+    }
+
+    if (this.layoutName === 'azerty') {
+      const row0 = '&é"\'(-è_çà)'
+      const digits = '1234567890'
+      for (let i = 0; i < digits.length; i++) {
+        const baseChar = row0[i]
+        if (mapping.has(baseChar) && !mapping.has(digits[i])) {
+          mapping.set(digits[i], mapping.get(baseChar)!)
+        }
+      }
+    }
+
+    return mapping
+  }
+
+  private normalizeChar(char: string): string {
+    char = char.toLowerCase()
+    if (this.composedAccents.has(char)) {
+      return char.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    }
+    return char
+  }
+
+  hasKey(char: string): boolean {
+    return this.posMap.has(this.normalizeChar(char))
+  }
+
+  getNeighborKeys(char: string): string[] {
+    const normalized = this.normalizeChar(char)
+    const pos = this.posMap.get(normalized)
+    if (!pos) return []
+
+    const [r, c] = pos
+    const neighbors: string[] = []
+    const deltas = [
+      [-1, -1], [-1, 0], [-1, 1],
+      [0, -1],           [0, 1],
+      [1, -1],  [1, 0],  [1, 1]
+    ]
+
+    for (const [dr, dc] of deltas) {
+      const nr = r + dr
+      const nc = c + dc
+      if (nr >= 0 && nr < this.grid.length && nc >= 0 && nc < this.grid[nr].length) {
+        neighbors.push(this.grid[nr][nc])
+      }
+    }
+
+    return neighbors
+  }
+
+  getDistance(char1: string, char2: string): number {
+    const norm1 = this.normalizeChar(char1)
+    const norm2 = this.normalizeChar(char2)
+
+    const pos1 = this.posMap.get(norm1)
+    const pos2 = this.posMap.get(norm2)
+
+    if (!pos1 || !pos2) return FAR_KEY_THRESHOLD
+
+    return Math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
+  }
+
+  getRandomNeighbor(char: string, rng: Rng): string {
+    const wasUpper = char === char.toUpperCase() && char !== char.toLowerCase()
+    const neighbors = this.getNeighborKeys(char)
+
+    let result: string
+    if (neighbors.length === 0) {
+      const flat = this.grid.flat()
+      result = flat[Math.floor(rng() * flat.length)]
+    } else {
+      result = neighbors[Math.floor(rng() * neighbors.length)]
+    }
+
+    return wasUpper ? result.toUpperCase() : result
+  }
+
+  isDirectAccent(char: string): boolean {
+    return this.directAccents.has(char.toLowerCase())
+  }
+
+  isComposedAccent(char: string): boolean {
+    return this.composedAccents.has(char.toLowerCase())
+  }
+}
