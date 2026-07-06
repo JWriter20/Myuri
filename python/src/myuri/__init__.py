@@ -24,12 +24,13 @@ from .options import (
     ScrollOptions,
     TypeOptions,
 )
+from .profile import profile_from_seed
 from .rng import SeededRng, gaussian, generate_random_seed, make_rng
 from .settings import MyuriSettings, default_settings, resolve_settings
 from .types import BoundingBox, TimedVector, Vector, ViewportSize
 from .typing_engine.typer import HumanTyper, TyperInput
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "Cursor",
@@ -54,6 +55,7 @@ __all__ = [
     "MyuriSettings",
     "default_settings",
     "resolve_settings",
+    "profile_from_seed",
     "set_trajectory_data",
     "path",
     "get_random_box_point",

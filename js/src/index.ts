@@ -39,6 +39,9 @@ export {
   resolveSettings,
 } from './settings.js'
 
+// Seed -> behavioral profile (the "behavioral fingerprint").
+export { generateProfile } from './profile.js'
+
 // Action option types.
 export type {
   BoxOptions,

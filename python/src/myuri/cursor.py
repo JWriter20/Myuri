@@ -25,6 +25,7 @@ from .page import (
     viewport_of,
     wait_for_element,
 )
+from .profile import profile_from_seed
 from .rng import generate_random_seed, make_rng
 from .settings import resolve_settings
 from .types import BoundingBox, Vector, overshoot as overshoot_point
@@ -77,7 +78,16 @@ class Cursor:
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
         self._rng = make_rng(self._seed)
-        self._settings = resolve_settings(settings)
+        # An explicit ``settings`` override always wins (back-compat). Otherwise,
+        # if the caller supplied a seed, derive a stable behavioral profile from
+        # it so the same seed yields the same "personality"; with neither, use
+        # defaults.
+        if settings is not None:
+            self._settings = resolve_settings(settings)
+        elif seed is not None:
+            self._settings = profile_from_seed(self._seed)
+        else:
+            self._settings = resolve_settings(None)
         self._defaults = defaults or {}
         self._previous = start or get_better_starting_position(dimensions, self._rng)
         self._is_moving = False
@@ -99,6 +109,10 @@ class Cursor:
     # ---- public accessors ----
     def get_seed(self) -> int:
         return self._seed
+
+    def get_settings(self):
+        """The resolved behavioral settings (profile) this cursor is running with."""
+        return self._settings
 
     def get_location(self) -> Vector:
         return Vector(self._previous.x, self._previous.y)

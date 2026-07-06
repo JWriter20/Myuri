@@ -3,6 +3,7 @@ import { type Rng, makeRng, generateRandomSeed } from './rng.js'
 import { type Driver, type ResolvedDriver, defineDriver } from './drivers/types.js'
 import { driverFromPage } from './drivers/index.js'
 import { resolveSettings, type MyuriSettings, type DeepPartial } from './settings.js'
+import { generateProfile } from './profile.js'
 import {
   viewportOf,
   boundingBoxOf,
@@ -82,7 +83,15 @@ export class Cursor {
     this.driver = defineDriver(driver)
     this.seed = (options.seed ?? generateRandomSeed()) >>> 0
     this.rng = makeRng(this.seed)
-    this.settings = resolveSettings(options.settings)
+    // An explicit `settings` override always wins (back-compat). Otherwise, if
+    // the caller supplied a seed, derive a stable behavioral profile from it so
+    // the same seed yields the same "personality"; with neither, use defaults.
+    this.settings =
+      options.settings !== undefined
+        ? resolveSettings(options.settings)
+        : options.seed !== undefined
+          ? generateProfile(this.seed)
+          : resolveSettings()
     this.defaults = options.defaults ?? {}
     this.previous = options.start ?? getBetterStartingPosition(options.dimensions, this.rng)
 
@@ -104,6 +113,11 @@ export class Cursor {
   /** The seed driving this cursor's PRNG. */
   getSeed(): number {
     return this.seed
+  }
+
+  /** The resolved behavioral settings (profile) this cursor is running with. */
+  getSettings(): MyuriSettings {
+    return this.settings
   }
 
   /** Current cursor position (viewport coordinates). */

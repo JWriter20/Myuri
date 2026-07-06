@@ -109,6 +109,33 @@ hand it to `create_cursor(driver=...)`.
 Both packages use a seeded Mulberry32 PRNG. Pass `seed` to reproduce identical mouse paths,
 scroll dynamics, and typing rhythm; read it back with `cursor.get_seed()` / `cursor.getSeed()`.
 
+### Seed → behavioral profile
+
+A seed doesn't just fix the *motion stream* — it also derives a stable **behavioral
+profile** (a *behavioral fingerprint*): how fast this identity types, how often it
+mistypes, how aggressively it overshoots, how quickly it scrolls. When you construct a
+cursor with a `seed` and no explicit `settings`, that profile is applied automatically:
+
+```ts
+import { createCursor, generateProfile } from '@jobharvest/myuri'
+
+const cursor = createCursor(page, { seed: 1234 }) // profile derived from 1234
+cursor.getSettings()                              // inspect the resolved traits
+generateProfile(1234)                             // or derive one standalone
+```
+
+```python
+from myuri import create_cursor, profile_from_seed
+
+cursor = create_cursor(page, seed=1234)
+cursor.get_settings()
+profile_from_seed(1234)
+```
+
+Because both languages share the PRNG and draw order, a given seed produces a
+byte-identical profile in TypeScript and Python. An explicit `settings` override always
+wins over the derived profile.
+
 ## Repo layout
 
 | Path | What |
