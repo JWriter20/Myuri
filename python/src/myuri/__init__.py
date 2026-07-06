@@ -4,8 +4,16 @@ Bring your own driver (Playwright by default, or any backend that can dispatch
 input and run JS in the page). The simulation core (trajectories, scroll model,
 Markov typing, seeded RNG) is pure and shared with the TypeScript package.
 """
-from .cursor import Cursor, create_cursor
-from .drivers import Driver, PlaywrightDriver, define_driver, driver_from_page
+from .cursor import Cursor, Myuri, create_cursor
+from .drivers import (
+    CdpDriver,
+    Driver,
+    PlaywrightDriver,
+    define_driver,
+    driver_from_page,
+    from_cdp,
+    from_playwright,
+)
 from .geometry import get_better_starting_position, get_random_box_point, path
 from .motion.trajectory import set_trajectory_data
 from .options import (
@@ -25,11 +33,15 @@ __version__ = "2.0.0"
 
 __all__ = [
     "Cursor",
+    "Myuri",
     "create_cursor",
     "Driver",
     "PlaywrightDriver",
+    "CdpDriver",
     "define_driver",
     "driver_from_page",
+    "from_playwright",
+    "from_cdp",
     "HumanTyper",
     "TyperInput",
     "Vector",

@@ -14,6 +14,11 @@ export { playwrightDriver, type PlaywrightLikePage } from './playwright.js'
 export { cdpDriver, type CdpCapablePage, type CdpSession } from './cdp.js'
 export { puppeteerDriver, type PuppeteerLikePage } from './puppeteer.js'
 
+// Ergonomic aliases: `new Myuri(fromPlaywright(page))`.
+export { playwrightDriver as fromPlaywright } from './playwright.js'
+export { cdpDriver as fromCDP } from './cdp.js'
+export { puppeteerDriver as fromPuppeteer } from './puppeteer.js'
+
 import { type Driver } from './types.js'
 import { playwrightDriver, type PlaywrightLikePage } from './playwright.js'
 import { puppeteerDriver, type PuppeteerLikePage } from './puppeteer.js'

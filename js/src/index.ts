@@ -1,6 +1,6 @@
 // myuri — API-agnostic human-like browser cursor, keyboard, and scroll.
 
-export { Cursor, createCursor, type CursorOptions, type CursorDriverConfig } from './cursor.js'
+export { Cursor, Cursor as Myuri, createCursor, type CursorOptions, type CursorDriverConfig } from './cursor.js'
 
 // Driver interface, defaults, and prebuilt wrappers.
 export {
@@ -18,6 +18,9 @@ export {
   type CdpSession,
   puppeteerDriver,
   type PuppeteerLikePage,
+  fromPlaywright,
+  fromCDP,
+  fromPuppeteer,
   driverFromPage,
 } from './drivers/index.js'
 

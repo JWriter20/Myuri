@@ -516,16 +516,28 @@ function isDriverConfig(value: unknown): value is CursorDriverConfig {
   return typeof value === 'object' && value !== null && 'driver' in value
 }
 
+function isDriverLike(value: unknown): value is Driver {
+  const v = value as Record<string, unknown> | null
+  return (
+    !!v &&
+    typeof v.move === 'function' &&
+    typeof v.click === 'function' &&
+    typeof v.evaluate === 'function'
+  )
+}
+
 /**
- * Create a {@link Cursor}. Pass a Playwright/Puppeteer page (the driver is
- * inferred) or a `{ driver }` config for full control.
+ * Create a {@link Cursor}. Pass a driver (e.g. `fromPlaywright(page)`), a raw
+ * Playwright/Puppeteer page (the driver is inferred), or a `{ driver }` config.
  */
+export function createCursor(driver: Driver, options?: CursorOptions): Cursor
 export function createCursor(page: unknown, options?: CursorOptions): Cursor
 export function createCursor(config: CursorDriverConfig): Cursor
-export function createCursor(pageOrConfig: unknown, options?: CursorOptions): Cursor {
-  if (isDriverConfig(pageOrConfig)) {
-    const { driver, ...opts } = pageOrConfig
+export function createCursor(arg: unknown, options?: CursorOptions): Cursor {
+  if (isDriverConfig(arg)) {
+    const { driver, ...opts } = arg
     return new Cursor(driver, opts)
   }
-  return new Cursor(driverFromPage(pageOrConfig), options)
+  if (isDriverLike(arg)) return new Cursor(arg, options)
+  return new Cursor(driverFromPage(arg), options)
 }

@@ -49,6 +49,20 @@ cursor = create_cursor(driver, seed=1234)
 JSON-serializable argument, and must run it in the page and return the result — the
 same contract as Playwright's `page.evaluate`.
 
+### Prebuilt wrappers
+
+`from_playwright` / `from_cdp` turn a page into a driver, so you can construct directly:
+
+```python
+from myuri import Myuri, from_playwright, from_cdp
+
+cursor = Myuri(from_playwright(page), seed=1234)
+# or dispatch mouse input over CDP on a Chromium page:
+cursor = Myuri(from_cdp(page), seed=1234)
+```
+
+(`Myuri` is an alias of `Cursor`.)
+
 ## Determinism
 
 Seeded Mulberry32 PRNG — the **same seed produces the same numbers as the TypeScript

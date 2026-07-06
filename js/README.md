@@ -46,7 +46,21 @@ const cursor = createCursor({
 })
 ```
 
-Prebuilt wrappers: `import { playwrightDriver, cdpDriver, puppeteerDriver } from 'myuri/drivers'`.
+## Prebuilt driver wrappers
+
+`fromPlaywright` / `fromCDP` / `fromPuppeteer` turn a page into a driver, so you can
+construct directly:
+
+```ts
+import { Myuri, createCursor, fromPlaywright, fromCDP, fromPuppeteer } from 'myuri'
+
+const cursor = new Myuri(fromPlaywright(page), { seed: 1234 })
+// equivalently:
+const cursor2 = createCursor(fromCDP(page))
+```
+
+(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `myuri/drivers` are the same
+functions under descriptive names; `Myuri` is an alias of `Cursor`.)
 
 The `Driver` needs input primitives (`move`, `click`, `down`, `up`, `wheel`, `press`)
 plus one query seam, `evaluate(fn, arg)`, which every DOM measurement is built on.

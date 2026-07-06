@@ -52,6 +52,11 @@ class PlaywrightDriver(Driver):
         return bool(self._page.is_closed())
 
 
+def from_playwright(page: Any) -> Driver:
+    """Convenience constructor: ``Myuri(from_playwright(page))``."""
+    return PlaywrightDriver(page)
+
+
 def driver_from_page(page: Any) -> Driver:
     """Infer a driver from a page object. Currently returns a
     :class:`PlaywrightDriver` (also covers patchright). Pass an explicit driver
