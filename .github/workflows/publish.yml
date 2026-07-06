@@ -5,9 +5,13 @@ name: Publish
 # pushes are no-ops and a version bump triggers a release.
 #
 # Setup required (one-time):
-#   - npm: create the private @jobharvest org on npm, then add a repo secret
-#     NPM_TOKEN (an automation token with publish rights to the org). The package
-#     publishes with restricted (private) access.
+#   - npm: uses OIDC *trusted publishing* — no tokens/secrets. On npmjs.com, under
+#     the @jobharvest org, open the @jobharvest/myuri package settings → "Trusted
+#     Publisher" and add GitHub Actions with:
+#         Organization/user: JWriter20   Repository: Myuri   Workflow: publish.yml
+#     (npm requires the package to exist to configure this. For the very first
+#     publish, do one bootstrap `npm publish` from your machine while logged in to
+#     the org; every CI publish after that is tokenless via OIDC.)
 #   - Python: nothing. Public PyPI has no private/scoped packages, so the wheel is
 #     attached to a GitHub Release on this private repo instead. Consumers install
 #     from the private repo, e.g.:
@@ -21,6 +25,9 @@ jobs:
   npm:
     name: npm (@jobharvest/myuri, private)
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC trusted publishing
+      contents: read
     defaults:
       run:
         working-directory: js
@@ -31,19 +38,23 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
           scope: '@jobharvest'
+      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
       - run: npm ci
       - name: Publish if version is new
+        # Provenance is disabled: attestations are public and require a public
+        # package, but this one is restricted/private. OIDC auth is unaffected.
+        env:
+          NPM_CONFIG_PROVENANCE: 'false'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           if npm view "@jobharvest/myuri@$VERSION" version >/dev/null 2>&1; then
             echo "@jobharvest/myuri@$VERSION already published — skipping."
           else
-            echo "Publishing @jobharvest/myuri@$VERSION"
+            echo "Publishing @jobharvest/myuri@$VERSION via OIDC trusted publishing"
             npm run build
             npm publish --access restricted
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   python:
     name: python (private, GitHub Release)
