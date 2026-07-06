@@ -25,9 +25,9 @@ Available for **TypeScript/JavaScript** (`js/`) and **Python** (`python/`) with 
 Older versions hard-coded Playwright/CDP "interaction strategies". myuri instead takes a
 single `Driver` object with two groups of capabilities:
 
-- **Input** — `move`, `click`, `down`, `up`, `wheel`, `press`, `insertText`, `setClipboard`
-- **Query** — `evaluate(fn, arg)`, `boundingBox(selector)`, `waitForElement(selector, opts)`,
-  `viewport()`, `isClosed()`
+- **Input** (required) — `move`, `click`, `down`, `up`, `wheel`, `press`
+- **Query** (required) — `evaluate(fn, arg)`
+- **Optional** (defaults supplied) — `insertText`, `setClipboard`, `isClosed`, `dispose`
 
 Every DOM measurement myuri needs (element boxes, occlusion, scroll offsets, viewport)
 runs through `evaluate`, so any driver that can run JS in the page and dispatch input works.
@@ -36,7 +36,7 @@ Convenience wrappers ship for the common cases, so most users inject nothing.
 ## TypeScript
 
 ```ts
-import { createCursor } from 'myuri'
+import { createCursor } from '@jobharvest/myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -55,22 +55,22 @@ await cursor.dispose()          // detaches CDP sessions, clears timers
 Bring your own driver:
 
 ```ts
-import { createCursor, defineDriver } from 'myuri'
+import { createCursor, defineDriver } from '@jobharvest/myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
+    // required input primitives
     move: (x, y) => myBackend.mouseMove(x, y),
     click: () => myBackend.mouseClick(),
-    wheel: (dx, dy) => myBackend.wheel(dx, dy),
-    press: (key, opts) => myBackend.press(key, opts),
-    insertText: (t) => myBackend.type(t),
     down: (k) => myBackend.keyDown(k),
     up: (k) => myBackend.keyUp(k),
-    setClipboard: (t) => myBackend.clipboard(t),
+    wheel: (dx, dy) => myBackend.wheel(dx, dy),
+    press: (key, opts) => myBackend.press(key, opts),
+    // required query seam: run a JS function in the page and return its result
     evaluate: (fn, arg) => myBackend.eval(fn, arg),
-    boundingBox: (sel) => myBackend.box(sel),
-    waitForElement: (sel, o) => myBackend.wait(sel, o),
-    viewport: () => myBackend.viewport(),
+    // optional (these have defaults built on evaluate/press)
+    insertText: (t) => myBackend.type(t),
+    setClipboard: (t) => myBackend.clipboard(t),
     isClosed: () => myBackend.closed(),
   }),
 })
@@ -79,7 +79,7 @@ const cursor = createCursor({
 Prebuilt wrappers:
 
 ```ts
-import { playwrightDriver, cdpDriver, puppeteerDriver } from 'myuri/drivers'
+import { playwrightDriver, cdpDriver, puppeteerDriver } from '@jobharvest/myuri/drivers'
 const cursor = createCursor({ driver: cdpDriver(page) })
 ```
 
@@ -113,8 +113,8 @@ scroll dynamics, and typing rhythm; read it back with `cursor.get_seed()` / `cur
 
 | Path | What |
 |------|------|
-| `js/` | npm package `myuri` |
-| `python/` | PyPI package `myuri` |
+| `js/` | npm package `@jobharvest/myuri` (private) |
+| `python/` | Python package `myuri` (private; git-installed) |
 | `assets/trajectories.json.gz` | shared recorded-motion dataset (single source of truth) |
 
 ## License

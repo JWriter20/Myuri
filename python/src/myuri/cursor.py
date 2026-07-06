@@ -405,7 +405,3 @@ def create_cursor(page_or_driver: Any, **options: Any) -> Cursor:
     raw Playwright page (driver inferred), or a :class:`Driver` instance."""
     driver = page_or_driver if isinstance(page_or_driver, Driver) else driver_from_page(page_or_driver)
     return Cursor(driver, **options)
-
-
-# Ergonomic alias: ``Myuri(from_playwright(page))``.
-Myuri = Cursor

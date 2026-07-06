@@ -1,16 +1,26 @@
 name: Publish
 
-# Publishes both packages when a version tag is pushed (e.g. v2.0.0).
+# Auto-publishes when a new version lands on main. Each job is version-guarded:
+# it only publishes if that package's version isn't already released, so ordinary
+# pushes are no-ops and a version bump triggers a release.
+#
+# Setup required (one-time):
+#   - npm: create the private @jobharvest org on npm, then add a repo secret
+#     NPM_TOKEN (an automation token with publish rights to the org). The package
+#     publishes with restricted (private) access.
+#   - Python: nothing. Public PyPI has no private/scoped packages, so the wheel is
+#     attached to a GitHub Release on this private repo instead. Consumers install
+#     from the private repo, e.g.:
+#       pip install "git+https://github.com/JWriter20/Myuri.git@myuri-v2.0.0#subdirectory=python"
+
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 jobs:
   npm:
+    name: npm (@jobharvest/myuri, private)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     defaults:
       run:
         working-directory: js
@@ -20,16 +30,26 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+          scope: '@jobharvest'
       - run: npm ci
-      - run: npm run build
-      - run: npm publish --provenance --access public
+      - name: Publish if version is new
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@jobharvest/myuri@$VERSION" version >/dev/null 2>&1; then
+            echo "@jobharvest/myuri@$VERSION already published — skipping."
+          else
+            echo "Publishing @jobharvest/myuri@$VERSION"
+            npm run build
+            npm publish --access restricted
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  pypi:
+  python:
+    name: python (private, GitHub Release)
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # trusted publishing
+      contents: write # create tags + releases on this private repo
     defaults:
       run:
         working-directory: python
@@ -38,8 +58,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install build
-      - run: python -m build
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: python/dist
+      - name: Release wheel if version is new
+        run: |
+          VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          TAG="myuri-v$VERSION"
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "$TAG already released — skipping."
+          else
+            echo "Releasing $TAG"
+            pip install build
+            python -m build
+            gh release create "$TAG" dist/* \
+              --title "myuri (python) v$VERSION" \
+              --notes "Private release. Install: pip install \"git+https://github.com/JWriter20/Myuri.git@$TAG#subdirectory=python\""
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,15 +1,18 @@
 {
-  "name": "myuri",
+  "name": "@jobharvest/myuri",
   "version": "2.0.0",
   "description": "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, Puppeteer, or custom).",
-  "homepage": "https://github.com/JWriter20/myuri#readme",
+  "homepage": "https://github.com/JWriter20/Myuri#readme",
   "bugs": {
-    "url": "https://github.com/JWriter20/myuri/issues"
+    "url": "https://github.com/JWriter20/Myuri/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JWriter20/myuri.git",
+    "url": "git+https://github.com/JWriter20/Myuri.git",
     "directory": "js"
+  },
+  "publishConfig": {
+    "access": "restricted"
   },
   "license": "MIT",
   "author": "Jake Writer",

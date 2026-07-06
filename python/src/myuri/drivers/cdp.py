@@ -77,5 +77,5 @@ class CdpDriver(Driver):
 
 
 def from_cdp(page: Any) -> Driver:
-    """Convenience constructor: ``Myuri(from_cdp(page))``."""
+    """Convenience constructor: ``create_cursor(from_cdp(page))``."""
     return CdpDriver(page)

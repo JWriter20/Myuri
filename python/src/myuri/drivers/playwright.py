@@ -53,7 +53,7 @@ class PlaywrightDriver(Driver):
 
 
 def from_playwright(page: Any) -> Driver:
-    """Convenience constructor: ``Myuri(from_playwright(page))``."""
+    """Convenience constructor: ``create_cursor(from_playwright(page))``."""
     return PlaywrightDriver(page)
 
 

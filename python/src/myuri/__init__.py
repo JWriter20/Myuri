@@ -4,7 +4,7 @@ Bring your own driver (Playwright by default, or any backend that can dispatch
 input and run JS in the page). The simulation core (trajectories, scroll model,
 Markov typing, seeded RNG) is pure and shared with the TypeScript package.
 """
-from .cursor import Cursor, Myuri, create_cursor
+from .cursor import Cursor, create_cursor
 from .drivers import (
     CdpDriver,
     Driver,
@@ -33,7 +33,6 @@ __version__ = "2.0.0"
 
 __all__ = [
     "Cursor",
-    "Myuri",
     "create_cursor",
     "Driver",
     "PlaywrightDriver",

@@ -8,13 +8,13 @@ not talk to a browser itself — you inject a small **Driver**, so it works with
 Playwright, Puppeteer, raw CDP, or anything you can wrap.
 
 ```bash
-npm install myuri
+npm install @jobharvest/myuri
 ```
 
 ## Quick start (Playwright)
 
 ```ts
-import { createCursor } from 'myuri'
+import { createCursor } from '@jobharvest/myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -31,7 +31,7 @@ await cursor.dispose()
 ## Bring your own driver
 
 ```ts
-import { createCursor, defineDriver } from 'myuri'
+import { createCursor, defineDriver } from '@jobharvest/myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
@@ -48,19 +48,18 @@ const cursor = createCursor({
 
 ## Prebuilt driver wrappers
 
-`fromPlaywright` / `fromCDP` / `fromPuppeteer` turn a page into a driver, so you can
-construct directly:
+`fromPlaywright` / `fromCDP` / `fromPuppeteer` turn a page into a driver:
 
 ```ts
-import { Myuri, createCursor, fromPlaywright, fromCDP, fromPuppeteer } from 'myuri'
+import { createCursor, fromPlaywright, fromCDP } from '@jobharvest/myuri'
 
-const cursor = new Myuri(fromPlaywright(page), { seed: 1234 })
-// equivalently:
-const cursor2 = createCursor(fromCDP(page))
+const cursor = createCursor(fromPlaywright(page), { seed: 1234 })
+// or let createCursor infer the driver from a raw page:
+const cursor2 = createCursor(page, { seed: 1234 })
 ```
 
-(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `myuri/drivers` are the same
-functions under descriptive names; `Myuri` is an alias of `Cursor`.)
+(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `@jobharvest/myuri/drivers` are
+the same functions under descriptive names.)
 
 The `Driver` needs input primitives (`move`, `click`, `down`, `up`, `wheel`, `press`)
 plus one query seam, `evaluate(fn, arg)`, which every DOM measurement is built on.
@@ -72,5 +71,5 @@ Seeded Mulberry32 PRNG — the **same seed produces the same numbers as the Pyth
 package**. Pass `{ seed }` to reproduce motion, scrolls, and typing rhythm; read it back
 with `cursor.getSeed()`.
 
-Part of the [myuri](https://github.com/JWriter20/myuri) project (TypeScript + Python).
+Part of the [Myuri](https://github.com/JWriter20/Myuri) project (TypeScript + Python).
 MIT licensed.
