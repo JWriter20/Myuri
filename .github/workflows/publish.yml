@@ -44,16 +44,25 @@ jobs:
       - name: Publish if version is new
         # Provenance is disabled: attestations are public and require a public
         # package, but this one is restricted/private. OIDC auth is unaffected.
+        #
+        # The publish is idempotent rather than guarded by `npm view`: a restricted
+        # package can't be viewed without auth, and CI has no token (OIDC only mints
+        # one at publish time), so `npm view` always 404s and can't gate anything.
+        # Instead we just try to publish; if the registry rejects it because the
+        # version already exists, that's a no-op (unbumped push), not a failure.
         env:
           NPM_CONFIG_PROVENANCE: 'false'
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "@jobharvest/myuri@$VERSION" version >/dev/null 2>&1; then
-            echo "@jobharvest/myuri@$VERSION already published — skipping."
+          echo "Publishing @jobharvest/myuri@$VERSION via OIDC trusted publishing"
+          npm run build
+          if npm publish --access restricted 2>err.log; then
+            echo "Published $VERSION"
+          elif grep -q "previously published versions" err.log; then
+            echo "@jobharvest/myuri@$VERSION already published — no-op."
           else
-            echo "Publishing @jobharvest/myuri@$VERSION via OIDC trusted publishing"
-            npm run build
-            npm publish --access restricted
+            cat err.log >&2
+            exit 1
           fi
 
   python:
