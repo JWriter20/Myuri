@@ -1,87 +1,114 @@
 name: Publish
 
-# Auto-publishes when a new version lands on main. Each job is version-guarded:
-# it only publishes if that package's version isn't already released, so ordinary
-# pushes are no-ops and a version bump triggers a release.
+# Auto-versioned release. Every push to main computes the next SemVer from the
+# Conventional-Commit subjects since the last `myuri-v*` tag — `!`/BREAKING → major,
+# `feat` → minor, anything else → patch (patch is the floor, so every merge ships) —
+# then publishes both packages at that version and records it back:
+#   - npm  (@jobharvest/myuri, restricted): tokenless via OIDC trusted publishing
+#   - python: wheel attached to a GitHub Release on this private repo
+#     (pip install "git+https://github.com/JWriter20/Myuri.git@myuri-v<ver>#subdirectory=python")
+# The bump is committed as `release: v<ver> [skip ci]`; the [skip ci] keeps that
+# commit from re-triggering this workflow.
 #
-# Setup required (one-time):
-#   - npm: uses OIDC *trusted publishing* — no tokens/secrets. On npmjs.com, under
-#     the @jobharvest org, open the @jobharvest/myuri package settings → "Trusted
-#     Publisher" and add GitHub Actions with:
-#         Organization/user: JWriter20   Repository: Myuri   Workflow: publish.yml
-#     (npm requires the package to exist to configure this. For the very first
-#     publish, do one bootstrap `npm publish` from your machine while logged in to
-#     the org; every CI publish after that is tokenless via OIDC.)
-#   - Python: nothing. Public PyPI has no private/scoped packages, so the wheel is
-#     attached to a GitHub Release on this private repo instead. Consumers install
-#     from the private repo, e.g.:
-#       pip install "git+https://github.com/JWriter20/Myuri.git@myuri-v2.0.0#subdirectory=python"
+# One-time npm setup (already done): npmjs.com → @jobharvest/myuri → Trusted
+# Publisher → GitHub Actions (JWriter20/Myuri, publish.yml). No tokens/secrets.
 
 on:
   push:
     branches: [main]
 
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
-  npm:
-    name: npm (@jobharvest/myuri, private)
+  release:
+    # Never react to our own release commit (belt-and-suspenders with [skip ci]).
+    if: ${{ !startsWith(github.event.head_commit.message, 'release:') }}
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # OIDC trusted publishing
-      contents: read
-    defaults:
-      run:
-        working-directory: js
+      id-token: write # OIDC trusted publishing (npm)
+      contents: write # push the version bump + tag, create the GitHub Release
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the semantic bump
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           scope: '@jobharvest'
-      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
-      - run: npm ci
-      - name: Publish if version is new
-        # Provenance is disabled: attestations are public and require a public
-        # package, but this one is restricted/private. OIDC auth is unaffected.
-        env:
-          NPM_CONFIG_PROVENANCE: 'false'
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "@jobharvest/myuri@$VERSION" version >/dev/null 2>&1; then
-            echo "@jobharvest/myuri@$VERSION already published — skipping."
-          else
-            echo "Publishing @jobharvest/myuri@$VERSION via OIDC trusted publishing"
-            npm run build
-            npm publish --access restricted
-          fi
-
-  python:
-    name: python (private, GitHub Release)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # create tags + releases on this private repo
-    defaults:
-      run:
-        working-directory: python
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Release wheel if version is new
+      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Compute next version
+        id: ver
         run: |
-          VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          TAG="myuri-v$VERSION"
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
-            echo "$TAG already released — skipping."
-          else
-            echo "Releasing $TAG"
-            pip install build
-            python -m build
-            gh release create "$TAG" dist/* \
-              --title "myuri (python) v$VERSION" \
-              --notes "Private release. Install: pip install \"git+https://github.com/JWriter20/Myuri.git@$TAG#subdirectory=python\""
+          LAST=$(git tag -l 'myuri-v*' | sed 's/^myuri-v//' | sort -V | tail -1)
+          [ -z "$LAST" ] && LAST=$(node -p "require('./js/package.json').version")
+          RANGE=HEAD
+          git rev-parse -q --verify "myuri-v$LAST^{commit}" >/dev/null && RANGE="myuri-v$LAST..HEAD"
+          LOG=$(git log --format='%s%n%b' "$RANGE")
+          LEVEL=patch
+          if echo "$LOG" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+            LEVEL=major
+          elif echo "$LOG" | grep -qE '^feat(\(.+\))?:'; then
+            LEVEL=minor
           fi
+          IFS=. read -r MA MI PA <<<"$LAST"
+          case "$LEVEL" in
+            major) MA=$((MA + 1)); MI=0; PA=0 ;;
+            minor) MI=$((MI + 1)); PA=0 ;;
+            patch) PA=$((PA + 1)) ;;
+          esac
+          NEXT="$MA.$MI.$PA"
+          echo "last=$LAST level=$LEVEL next=$NEXT"
+          echo "next=$NEXT" >>"$GITHUB_OUTPUT"
+
+      - name: Publish npm (@jobharvest/myuri) via OIDC
+        working-directory: js
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.ver.outputs.next }}
+          # Provenance needs a public package; this one is restricted, so disable it.
+          NPM_CONFIG_PROVENANCE: 'false'
+        run: |
+          npm ci
+          npm version "$NEXT" --no-git-tag-version --allow-same-version
+          npm run build
+          # Idempotent: a re-run after a partial failure must not red-fail on a
+          # version that already made it to the registry.
+          if npm publish --access restricted 2>err.log; then
+            echo "Published @jobharvest/myuri@$NEXT"
+          elif grep -q "previously published versions" err.log; then
+            echo "@jobharvest/myuri@$NEXT already on npm — no-op."
+          else
+            cat err.log >&2; exit 1
+          fi
+
+      - name: Build python wheel
+        working-directory: python
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          sed -i -E "s/^version = \".*\"/version = \"$NEXT\"/" pyproject.toml
+          pip install build
+          python -m build
+
+      - name: Record release (commit + tag + GitHub Release)
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          TAG="myuri-v$NEXT"
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git commit -am "release: v$NEXT [skip ci]"
+          git tag "$TAG"
+          git push origin HEAD:main "$TAG"
+          gh release create "$TAG" python/dist/* \
+            --title "myuri v$NEXT" \
+            --notes "npm: @jobharvest/myuri@$NEXT · pip: pip install \"git+https://github.com/JWriter20/Myuri.git@$TAG#subdirectory=python\""
