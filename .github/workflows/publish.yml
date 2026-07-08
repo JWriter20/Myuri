@@ -70,16 +70,35 @@ jobs:
           echo "last=$LAST level=$LEVEL next=$NEXT"
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
 
-      - name: Publish npm (@jobharvest/myuri) via OIDC
+      # Build both packages BEFORE publishing anything, so a build failure can't
+      # leave one package published without a matching tag/release.
+      - name: Build npm (@jobharvest/myuri)
+        working-directory: js
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          npm ci
+          npm version "$NEXT" --no-git-tag-version --allow-same-version
+          npm run build
+
+      - name: Build python wheel
+        working-directory: python
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          sed -i -E "s/^version = \".*\"/version = \"$NEXT\"/" pyproject.toml
+          pip install build
+          # --wheel only: the asset is force-included from ../assets (shared with js),
+          # which `build`'s default sdist→wheel path can't see from the sdist temp dir.
+          python -m build --wheel
+
+      - name: Publish npm via OIDC
         working-directory: js
         env:
           NEXT: ${{ steps.ver.outputs.next }}
           # Provenance needs a public package; this one is restricted, so disable it.
           NPM_CONFIG_PROVENANCE: 'false'
         run: |
-          npm ci
-          npm version "$NEXT" --no-git-tag-version --allow-same-version
-          npm run build
           # Idempotent: a re-run after a partial failure must not red-fail on a
           # version that already made it to the registry.
           if npm publish --access restricted 2>err.log; then
@@ -89,15 +108,6 @@ jobs:
           else
             cat err.log >&2; exit 1
           fi
-
-      - name: Build python wheel
-        working-directory: python
-        env:
-          NEXT: ${{ steps.ver.outputs.next }}
-        run: |
-          sed -i -E "s/^version = \".*\"/version = \"$NEXT\"/" pyproject.toml
-          pip install build
-          python -m build
 
       - name: Record release (commit + tag + GitHub Release)
         env:
