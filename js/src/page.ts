@@ -43,6 +43,17 @@ export async function boundingBoxOf(
   return await driver.evaluate((sel: string): BoundingBox | null => {
     function resolve(s: string): Element | null {
       if (s == null) return null
+      if (s.includes('>>')) {
+        const parts = s.split(/\s*>>\s*/).filter(Boolean)
+        let root: Document | ShadowRoot | Element = document
+        let el: Element | null = null
+        for (const part of parts) {
+          el = (root as ParentNode).querySelector(part)
+          if (!el) return null
+          root = (el as Element).shadowRoot || (el as Element)
+        }
+        return el
+      }
       if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
         const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
         try {
@@ -83,6 +94,17 @@ export async function scrollMetricsOf(
 ): Promise<ScrollMetrics> {
   return await driver.evaluate((sel: string | null): ScrollMetrics => {
     function resolve(s: string): Element | null {
+      if (s.includes('>>')) {
+        const parts = s.split(/\s*>>\s*/).filter(Boolean)
+        let root: Document | ShadowRoot | Element = document
+        let el: Element | null = null
+        for (const part of parts) {
+          el = (root as ParentNode).querySelector(part)
+          if (!el) return null
+          root = (el as Element).shadowRoot || (el as Element)
+        }
+        return el
+      }
       if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
         const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
         try {
@@ -131,6 +153,19 @@ export async function pointHitsTarget(
   return await driver.evaluate(
     (arg: { selector: string; x: number; y: number }): boolean => {
       function resolve(s: string): Element | null {
+        // Playwright shadow-piercing selector (a >> b >> c): descend into each
+        // matched element's shadow root for the next segment.
+        if (s.includes('>>')) {
+          const parts = s.split(/\s*>>\s*/).filter(Boolean)
+          let root: Document | ShadowRoot | Element = document
+          let el: Element | null = null
+          for (const part of parts) {
+            el = (root as ParentNode).querySelector(part)
+            if (!el) return null
+            root = (el as Element).shadowRoot || (el as Element)
+          }
+          return el
+        }
         if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
           const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
           try {
@@ -205,6 +240,17 @@ export async function waitForElement(
     const ok = await driver.evaluate(
       (arg: { selector: string; requireVisible: boolean }): boolean => {
         function resolve(s: string): Element | null {
+          if (s.includes('>>')) {
+            const parts = s.split(/\s*>>\s*/).filter(Boolean)
+            let root: Document | ShadowRoot | Element = document
+            let el: Element | null = null
+            for (const part of parts) {
+              el = (root as ParentNode).querySelector(part)
+              if (!el) return null
+              root = (el as Element).shadowRoot || (el as Element)
+            }
+            return el
+          }
           if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
             const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
             try {

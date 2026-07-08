@@ -30,6 +30,13 @@ export interface MyuriSettings {
     wpm: number
     layout: 'qwerty' | 'azerty'
     mistakeMultiplier: number
+    /**
+     * Per-keystroke hold delay (keydown→keyup), in ms, sampled uniformly in
+     * [min, max]. Independent of `wpm`, this is a realistic floor so a burst at
+     * very high wpm still holds each key briefly — which also gives async widgets
+     * (autocomplete/typeahead dropdowns) time to react between keys. 0/0 to disable.
+     */
+    keyDelay: { min: number; max: number }
   }
 }
 
@@ -59,6 +66,7 @@ export const defaultSettings: MyuriSettings = {
     wpm: 80,
     layout: 'qwerty',
     mistakeMultiplier: 1.0,
+    keyDelay: { min: 30, max: 50 },
   },
 }
 

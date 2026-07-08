@@ -28,6 +28,8 @@ export interface HumanTyperOptions {
   wpm?: number
   layout?: 'qwerty' | 'azerty'
   mistakeMultiplier?: number
+  /** Per-key hold (keydown→keyup) ms, sampled in [min, max]. Default {30,50}. */
+  keyDelay?: { min: number; max: number }
   onCharacter?: (char: string, delayMs: number) => void
   onMistake?: (info: { typedChar: string }) => void
   onBackspace?: () => void
@@ -58,6 +60,7 @@ export class HumanTyper {
   private onCharacterCallback?: (char: string, delayMs: number) => void
   private onMistakeCallback?: (info: { typedChar: string }) => void
   private onBackspaceCallback?: () => void
+  private keyDelay: { min: number; max: number }
   private rng: Rng
   // Per-session typing speed, sampled ONCE at construction so every field this
   // typer fills shares one natural speed. A real user doesn't re-roll their WPM
@@ -72,15 +75,24 @@ export class HumanTyper {
     this.onCharacterCallback = options?.onCharacter
     this.onMistakeCallback = options?.onMistake
     this.onBackspaceCallback = options?.onBackspace
+    this.keyDelay = options?.keyDelay ?? { min: 30, max: 50 }
     this.rng = options?.rng ?? defaultRng
     this.sessionWpm = Math.max(10, gaussian(this.rng, this.wpm, WPM_STD))
   }
 
+  /** Per-key hold delay (keydown→keyup) sampled in the configured range. */
+  private pressOpts(): { delay: number } | undefined {
+    const { min, max } = this.keyDelay
+    if (max <= 0) return undefined
+    return { delay: this.rng() * (max - min) + min }
+  }
+
   /**
    * Type text with human-like timing, errors, and corrections using the Markov
-   * chain simulation engine. The modeled inter-key delay is the single source
-   * of truth for timing: we sleep it, then press the key WITHOUT an extra hold
-   * delay (fixes the old double-counting that slowed real WPM).
+   * chain simulation engine. The modeled inter-key delay (`event.dtMs`) drives
+   * the gap between keys; each keystroke is then held for a short `keyDelay`
+   * (keydown→keyup), a realistic floor that also lets async widgets (autocomplete
+   * dropdowns) react between keys even at very high wpm.
    */
   public async type(text: string): Promise<void> {
     if (!text) return
@@ -115,14 +127,14 @@ export class HumanTyper {
 
       case 'swap':
         for (const char of event.chars) {
-          await this.input.press(charToKey(char))
+          await this.input.press(charToKey(char), this.pressOpts())
           this.onCharacterCallback?.(char, delayMs)
         }
         this.onMistakeCallback?.({ typedChar: event.chars })
         return
 
       case 'error':
-        await this.input.press(charToKey(event.chars))
+        await this.input.press(charToKey(event.chars), this.pressOpts())
         this.onMistakeCallback?.({ typedChar: event.chars })
         this.onCharacterCallback?.(event.chars, delayMs)
         return
@@ -130,7 +142,7 @@ export class HumanTyper {
       case 'type':
       case 'correct':
         for (const char of event.chars) {
-          await this.input.press(charToKey(char))
+          await this.input.press(charToKey(char), this.pressOpts())
           this.onCharacterCallback?.(char, delayMs)
         }
         return
