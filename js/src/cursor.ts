@@ -68,7 +68,7 @@ export class Cursor {
   private readonly seed: number
   private readonly settings: MyuriSettings
   private readonly defaults: NonNullable<CursorOptions['defaults']>
-  private readonly typer: HumanTyper
+  private typer: HumanTyper
 
   private previous: Vector
   private isMoving = false
@@ -95,6 +95,7 @@ export class Cursor {
       wpm: this.settings.typing.wpm,
       layout: this.settings.typing.layout,
       mistakeMultiplier: this.settings.typing.mistakeMultiplier,
+      keyDelay: this.settings.typing.keyDelay,
       rng: this.rng,
     })
 
@@ -109,6 +110,34 @@ export class Cursor {
   /** Current cursor position (viewport coordinates). */
   getLocation(): Vector {
     return { ...this.previous }
+  }
+
+  /** Current typing mistake multiplier (0 disables self-correcting typos). */
+  getMistakeMultiplier(): number {
+    return this.settings.typing.mistakeMultiplier
+  }
+
+  /**
+   * Adjust the typing mistake multiplier at runtime (e.g. 0 to disable typos on
+   * precise fields like emails/dates). Rebuilds the typer on the SAME rng stream,
+   * so motion/timing determinism for a given seed is preserved.
+   */
+  setMistakeMultiplier(multiplier: number): void {
+    ;(this.settings.typing as { mistakeMultiplier: number }).mistakeMultiplier = multiplier
+    this.typer = new HumanTyper(
+      {
+        press: (key, opts) => this.driver.press(key, opts),
+        down: (key) => this.driver.down(key),
+        up: (key) => this.driver.up(key),
+      },
+      {
+        wpm: this.settings.typing.wpm,
+        layout: this.settings.typing.layout,
+        mistakeMultiplier: multiplier,
+        keyDelay: this.settings.typing.keyDelay,
+        rng: this.rng,
+      },
+    )
   }
 
   // ---- action lifecycle ---------------------------------------------------
@@ -273,6 +302,20 @@ export class Cursor {
         continue
       }
 
+      // The mouse can only travel within the visible viewport, so a target
+      // outside it (e.g. a form field far below the fold) must be scrolled in
+      // first — via the stealthy wheel model, never an instant scrollIntoView.
+      // Loop like scroll(): the wheel multiplier calibrates on the first pass,
+      // so a single scroll can undershoot a far target.
+      const scrollOpts: ScrollOptions = {
+        finishPosition: this.settings.scroll.finishPosition,
+        speedFactor: this.settings.scroll.speedFactor,
+        realism: { ...this.settings.scroll.realism },
+      }
+      for (let s = 0; s < 3 && !(await this.isElementInView(selector)); s++) {
+        await this.scrollToElement(selector, scrollOpts)
+      }
+
       const box = await boundingBoxOf(this.driver, selector)
       if (!box) {
         lastError = new Error(`myuri: element has no box: ${selector}`)
@@ -421,25 +464,149 @@ export class Cursor {
     }
   }
 
-  private async isElementInView(selector: string): Promise<boolean> {
-    const box = await boundingBoxOf(this.driver, selector)
-    if (!box) return false
-    const vp = await viewportOf(this.driver)
+  /**
+   * Container-aware scroll plan: finds the target's nearest scrollable ancestor
+   * (a nested overflow:auto/scroll container, else the page), and computes the
+   * wheel delta + a hover point over that scroller — so a field inside an inner
+   * scroll region is actually revealed, not just page-scrolled. Ported from the
+   * StealthMouse behaviour (findScrollableParent + calculateScrollDistance) so
+   * motion stays functionally identical to the old cursor.
+   */
+  private async computeScrollPlan(
+    selector: string,
+    finishPosition: number,
+  ): Promise<{ inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null> {
     const pad = Math.max(20, VIEWPORT_PADDING + 5)
-    return box.y >= pad && box.y + box.height <= vp.height - pad
+    return (await this.driver.evaluate(
+      (arg: { selector: string; finishPosition: number; pad: number }) => {
+        function resolve(s: string): Element | null {
+          // Playwright shadow-piercing selector (a >> b >> c): descend into each
+          // matched element's shadow root for the next segment.
+          if (s.includes('>>')) {
+            const parts = s.split(/\s*>>\s*/).filter(Boolean)
+            let root: Document | ShadowRoot | Element = document
+            let el: Element | null = null
+            for (const part of parts) {
+              el = (root as ParentNode).querySelector(part)
+              if (!el) return null
+              root = (el as Element).shadowRoot || (el as Element)
+            }
+            return el
+          }
+          if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
+            const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
+            try {
+              return document.evaluate(expr, document, null, 9, null).singleNodeValue as Element | null
+            } catch {
+              return null
+            }
+          }
+          const direct = document.querySelector(s)
+          if (direct) return direct
+          const stack: Array<Document | ShadowRoot> = [document]
+          while (stack.length) {
+            const root = stack.pop() as Document | ShadowRoot
+            const found = root.querySelector(s)
+            if (found) return found
+            root.querySelectorAll('*').forEach((e) => {
+              if ((e as Element).shadowRoot) stack.push((e as Element).shadowRoot as ShadowRoot)
+            })
+          }
+          return null
+        }
+        const el = resolve(arg.selector) as HTMLElement | null
+        if (!el) return null
+        const stepUp = (node: Element): Element | null => {
+          if (node.parentElement) return node.parentElement
+          const r = node.getRootNode() as ShadowRoot
+          return r && r.host ? (r.host as Element) : null
+        }
+        // Nearest scrollable ancestor; null = defer to page scroll.
+        let container: Element | null = null
+        let cur = stepUp(el)
+        let depth = 0
+        while (cur && depth < 50) {
+          const st = getComputedStyle(cur)
+          const hasScroll = cur.scrollHeight > cur.clientHeight
+          if (hasScroll && (st.overflowY === 'scroll' || st.overflowY === 'auto')) {
+            if (cur === document.documentElement) break
+            if (cur === document.body) {
+              if (document.documentElement.scrollHeight > window.innerHeight + 10) break
+              container = cur
+              break
+            }
+            container = cur
+            break
+          }
+          cur = stepUp(cur)
+          depth++
+        }
+        const isPage = !container
+        const scroller = (container || document.documentElement) as HTMLElement
+        const vh = window.innerHeight || document.documentElement.clientHeight
+        const vw = window.innerWidth || document.documentElement.clientWidth
+        const elRect = el.getBoundingClientRect()
+        const contRect = scroller.getBoundingClientRect()
+
+        // In-view is relative to the scroller's visible band, not just the page.
+        const top = isPage ? arg.pad : Math.max(arg.pad, contRect.top)
+        const bottom = isPage ? vh - arg.pad : Math.min(vh - arg.pad, contRect.bottom)
+        const inView = elRect.top >= top && elRect.bottom <= bottom
+
+        const currentScroll = isPage ? window.scrollY : scroller.scrollTop
+        const contHeight = isPage ? vh : contRect.height
+        const targetRelTop = isPage
+          ? elRect.top + window.scrollY
+          : elRect.top - contRect.top + currentScroll
+        const scrollHeight = isPage ? document.documentElement.scrollHeight : scroller.scrollHeight
+        const maxScroll = Math.max(0, scrollHeight - contHeight)
+        const desired = targetRelTop - contHeight * arg.finishPosition
+        const clamped = Math.max(0, Math.min(desired, maxScroll))
+        const deltaY = clamped - currentScroll
+
+        // A point over the scroller so wheel events land on IT (not the page).
+        let hoverX: number
+        let hoverY: number
+        if (isPage) {
+          hoverX = Math.min(Math.max(elRect.left + elRect.width / 2, 10), vw - 10)
+          hoverY = vh / 2
+        } else {
+          const visTop = Math.max(contRect.top, 0)
+          const visBottom = Math.min(contRect.bottom, vh)
+          hoverX = Math.min(Math.max(contRect.left + contRect.width / 2, contRect.left + 5), contRect.right - 5)
+          hoverY = (visTop + visBottom) / 2
+        }
+        hoverX = Math.min(Math.max(hoverX, 5), vw - 5)
+        hoverY = Math.min(Math.max(hoverY, 5), vh - 5)
+        return { inView, deltaY, hoverX, hoverY, isPage }
+      },
+      { selector, finishPosition, pad },
+    )) as { inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null
+  }
+
+  private async isElementInView(selector: string): Promise<boolean> {
+    const plan = await this.computeScrollPlan(selector, 0.5)
+    return plan ? plan.inView : false
   }
 
   private async scrollToElement(selector: string, opts: ScrollOptions): Promise<void> {
-    const box = await boundingBoxOf(this.driver, selector)
-    if (!box) return
-    const vp = await viewportOf(this.driver)
     const finishPosition = opts.finishPosition ?? 0.5
-    const targetY = vp.height * finishPosition
-    const elementCenterY = box.y + box.height / 2
-    const wantedDistance = (elementCenterY - targetY) * (this.scrollMultiplier ?? 1)
+    const plan = await this.computeScrollPlan(selector, finishPosition)
+    if (!plan || plan.inView) return
+
+    // Hover over the target's scroll container so the wheel scrolls IT, not the page.
+    await this.moveAlong(
+      { x: plan.hoverX, y: plan.hoverY },
+      { moveDelay: 0, randomizeMoveDelay: false },
+      false,
+    )
+
+    const wantedDistance = plan.deltaY * (this.scrollMultiplier ?? 1)
     if (Math.abs(wantedDistance) < 1) return
 
-    const pre = (await scrollMetricsOf(this.driver)).offset
+    // Calibration reads window scroll, so only calibrate off page scrolls (the
+    // wheel→px DPR ratio is identical for containers).
+    const pre = plan.isPage ? (await scrollMetricsOf(this.driver)).offset : null
     const speedIrregularity = opts.realism?.speedIrregularity ?? this.settings.scroll.realism.speedIrregularity
     const events = scrollModel.generateScrollPath(wantedDistance, this.rng, undefined, speedIrregularity)
     const sf = opts.speedFactor ?? 1
@@ -458,11 +625,14 @@ export class Cursor {
     }
     if (Math.abs(Math.round(accumulator)) >= 1) await this.driver.wheel(0, Math.round(accumulator))
 
-    const post = await this.settleScroll(pre)
-    const actualDelta = post - pre
-    // Calibrate wheel scaling once from the first meaningful scroll.
-    if (this.scrollMultiplier == null && Math.abs(wantedDistance) > 10 && Math.abs(actualDelta) > 10) {
-      this.scrollMultiplier = Math.round((wantedDistance / actualDelta) * 100) / 100
+    if (pre != null) {
+      const post = await this.settleScroll(pre)
+      const actualDelta = post - pre
+      if (this.scrollMultiplier == null && Math.abs(wantedDistance) > 10 && Math.abs(actualDelta) > 10) {
+        this.scrollMultiplier = Math.round((wantedDistance / actualDelta) * 100) / 100
+      }
+    } else {
+      await delay(120) // let the container settle (window-scroll settle doesn't apply)
     }
   }
 
