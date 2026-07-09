@@ -16,6 +16,10 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
     shadowRoot: null,
     parentNode: null,
     assignedSlot: null,
+    // cursor.ts walks up via parentElement, falling back to getRootNode() to
+    // detect a shadow host. This top-level stub has no shadow root, so return a
+    // document-like root with no `.host` (traversal stops there).
+    getRootNode: () => documentStub,
     getBoundingClientRect: () => ({
       x: rect.x,
       y: rect.y,
@@ -28,7 +32,23 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
     }),
   }
   const documentStub = {
-    documentElement: { clientWidth: 1280, clientHeight: 720, scrollHeight: 2000 },
+    documentElement: {
+      clientWidth: 1280,
+      clientHeight: 720,
+      scrollHeight: 2000,
+      // scroll-plan uses the documentElement as the page scroller and calls
+      // getBoundingClientRect() on it (values unused on the page path).
+      getBoundingClientRect: () => ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        width: 1280,
+        height: 720,
+        right: 1280,
+        bottom: 720,
+      }),
+    },
     querySelector: (_sel: string) => el,
     querySelectorAll: (_sel: string) => [] as unknown[],
     evaluate: () => ({ singleNodeValue: null }),

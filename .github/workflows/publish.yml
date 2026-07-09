@@ -97,7 +97,7 @@ jobs:
         run: |
           sed -i -E "s/^version = \".*\"/version = \"$NEXT\"/" pyproject.toml
           pip install build
-          python -m build
+          python -m build --wheel
 
       - name: Record release (commit + tag + GitHub Release)
         env:
