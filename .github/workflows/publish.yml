@@ -37,14 +37,12 @@ jobs:
           fetch-depth: 0 # full history + tags for the semantic bump
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           scope: '@jobharvest'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
 
       - name: Compute next version
         id: ver
