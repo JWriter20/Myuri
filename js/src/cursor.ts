@@ -491,8 +491,9 @@ export class Cursor {
     finishPosition: number,
   ): Promise<{ inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null> {
     const pad = Math.max(20, VIEWPORT_PADDING + 5)
+    const from = this.previous
     return (await this.driver.evaluate(
-      (arg: { selector: string; finishPosition: number; pad: number }) => {
+      (arg: { selector: string; finishPosition: number; pad: number; fromX: number; fromY: number }) => {
         function resolve(s: string): Element | null {
           // Playwright shadow-piercing selector (a >> b >> c): descend into each
           // matched element's shadow root for the next segment.
@@ -565,7 +566,31 @@ export class Cursor {
         // In-view is relative to the scroller's visible band, not just the page.
         const top = isPage ? arg.pad : Math.max(arg.pad, contRect.top)
         const bottom = isPage ? vh - arg.pad : Math.min(vh - arg.pad, contRect.bottom)
-        const inView = elRect.top >= top && elRect.bottom <= bottom
+        const geomInView = elRect.top >= top && elRect.bottom <= bottom
+        // Occlusion-aware: a target geometrically in the band but covered by a
+        // viewport-pinned element (fixed/sticky header or footer) is NOT reachable —
+        // treat it as out-of-view so the caller scrolls it toward finishPosition (0.5),
+        // clearing the header. Only pinned occluders count: anything that scrolls WITH
+        // the target (open dropdown layers, decorative wrappers) would re-occlude after
+        // every scroll and wedge the retry loop into its timeout.
+        let occluded = false
+        if (geomInView) {
+          const cx = Math.round(elRect.left + elRect.width / 2)
+          const cy = Math.round(elRect.top + elRect.height / 2)
+          const at = document.elementFromPoint(cx, cy)
+          if (at && at !== el && !el.contains(at) && !at.contains(el)) {
+            let n: Element | null = at
+            while (n && n !== document.body) {
+              const pos = getComputedStyle(n).position
+              if (pos === 'fixed' || pos === 'sticky') {
+                occluded = true
+                break
+              }
+              n = n.parentElement
+            }
+          }
+        }
+        const inView = geomInView && !occluded
 
         const currentScroll = isPage ? window.scrollY : scroller.scrollTop
         const contHeight = isPage ? vh : contRect.height
@@ -578,23 +603,52 @@ export class Cursor {
         const clamped = Math.max(0, Math.min(desired, maxScroll))
         const deltaY = clamped - currentScroll
 
-        // A point over the scroller so wheel events land on IT (not the page).
-        let hoverX: number
+        // A point over the scroller so wheel events land on IT (not the page) —
+        // the NEAREST such point to the current cursor position. Humans scroll
+        // from wherever the mouse sits; jumping to screen-center first reads as
+        // robotic (the old vh/2 hover visibly yanked the cursor up the page).
+        // A point is only usable if no OTHER scrollable element sits between it
+        // and the intended scroller — a wheel over an inner scroller (open
+        // dropdown list, overflowing textarea) is consumed there, the intended
+        // scroll never happens, and the first-scroll multiplier calibration gets
+        // poisoned. Probe lateral offsets nearest-first; humans nudge sideways
+        // to the page gutter to scroll, so this stays natural.
+        const clampX = (x: number) => isPage
+          ? Math.min(Math.max(x, 5), vw - 5)
+          : Math.min(Math.max(x, contRect.left + 5), contRect.right - 5)
         let hoverY: number
         if (isPage) {
-          hoverX = Math.min(Math.max(elRect.left + elRect.width / 2, 10), vw - 10)
-          hoverY = vh / 2
+          hoverY = arg.fromY
         } else {
           const visTop = Math.max(contRect.top, 0)
           const visBottom = Math.min(contRect.bottom, vh)
-          hoverX = Math.min(Math.max(contRect.left + contRect.width / 2, contRect.left + 5), contRect.right - 5)
-          hoverY = (visTop + visBottom) / 2
+          hoverY = Math.min(Math.max(arg.fromY, visTop + 5), visBottom - 5)
         }
-        hoverX = Math.min(Math.max(hoverX, 5), vw - 5)
         hoverY = Math.min(Math.max(hoverY, 5), vh - 5)
+
+        const wheelReachesScroller = (x: number, y: number): boolean => {
+          const hit = document.elementFromPoint(x, y)
+          if (!hit) return true
+          let n: Element | null = hit
+          const stop: Element | null = isPage ? null : scroller
+          while (n && n !== stop && n !== document.documentElement && n !== document.body) {
+            const st = getComputedStyle(n)
+            if (n.scrollHeight > n.clientHeight + 1 && (st.overflowY === 'auto' || st.overflowY === 'scroll')) return false
+            n = n.parentElement
+          }
+          return true
+        }
+        let hoverX = clampX(arg.fromX)
+        for (const dx of [0, -60, 60, -120, 120, -200, 200]) {
+          const x = clampX(arg.fromX + dx)
+          if (wheelReachesScroller(x, hoverY)) {
+            hoverX = x
+            break
+          }
+        }
         return { inView, deltaY, hoverX, hoverY, isPage }
       },
-      { selector, finishPosition, pad },
+      { selector, finishPosition, pad, fromX: from.x, fromY: from.y },
     )) as { inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null
   }
 
@@ -643,7 +697,10 @@ export class Cursor {
       const post = await this.settleScroll(pre)
       const actualDelta = post - pre
       if (this.scrollMultiplier == null && Math.abs(wantedDistance) > 10 && Math.abs(actualDelta) > 10) {
-        this.scrollMultiplier = Math.round((wantedDistance / actualDelta) * 100) / 100
+        // Clamp: a first scroll truncated by maxScroll (or partially consumed by
+        // an inner scroller) would otherwise poison every subsequent scroll with
+        // a wildly inflated multiplier.
+        this.scrollMultiplier = Math.min(3, Math.max(0.3, Math.round((wantedDistance / actualDelta) * 100) / 100))
       }
     } else {
       await delay(120) // let the container settle (window-scroll settle doesn't apply)
