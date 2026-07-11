@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "myuri"
-version = "2.2.2"
+version = "2.2.3"
 description = "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, or custom)."
 readme = "README.md"
 license = { text = "MIT" }
