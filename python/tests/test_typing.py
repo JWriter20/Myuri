@@ -128,14 +128,13 @@ class _StrictKeyboardDriver(Driver):
         return None
 
 
-@pytest.mark.skip(reason="TODO: not yet verified locally (no python runtime on dev box) — enable after CI validates")
 @pytest.mark.asyncio
 async def test_cursor_type_completes_accented_text_on_strict_keyboard():
     driver = _StrictKeyboardDriver()
     cursor = Cursor(
         driver,
         seed=42,
-        settings={"typing": {"layout": "azerty", "mistake_multiplier": 4, "wpm": 2000}},
+        settings={"typing": {"mistake_multiplier": 4, "wpm": 2000}},
     )
     await cursor.type("josé@example.com")
     assert driver.text == "josé@example.com"

@@ -28,7 +28,6 @@ export interface MyuriSettings {
   }
   typing: {
     wpm: number
-    layout: 'qwerty' | 'azerty'
     mistakeMultiplier: number
     /**
      * Per-keystroke hold delay (keydown→keyup), in ms, sampled uniformly in
@@ -64,7 +63,6 @@ export const defaultSettings: MyuriSettings = {
   },
   typing: {
     wpm: 80,
-    layout: 'qwerty',
     mistakeMultiplier: 1.0,
     keyDelay: { min: 30, max: 50 },
   },

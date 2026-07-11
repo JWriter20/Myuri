@@ -26,7 +26,6 @@ def test_fields_in_range():
         p = profile_from_seed(seed)
         assert 35 <= p.typing.wpm <= 130
         assert 0.4 <= p.typing.mistake_multiplier <= 2.0
-        assert p.typing.layout in ("qwerty", "azerty")
         assert 0.75 <= p.scroll.speed_factor <= 1.4
         assert 0.3 <= p.scroll.finish_position <= 0.7
         assert 0.02 <= p.scroll.realism.speed_irregularity <= 0.18
@@ -47,7 +46,6 @@ _TS_REFERENCE = {
     0: {
         "wpm": 109,
         "mistake_multiplier": 1.3678485454764795,
-        "layout": "qwerty",
         "scroll_speed_factor": 0.867959840859132,
         "overshoot_radius": 93.71148117954584,
         "dwell_min": 23,
@@ -56,7 +54,6 @@ _TS_REFERENCE = {
     1234: {
         "wpm": 68,
         "mistake_multiplier": 1.1555298233236206,
-        "layout": "azerty",
         "scroll_speed_factor": 1.174181314833933,
         "overshoot_radius": 183.22427128843862,
         "dwell_min": 13,
@@ -65,7 +62,6 @@ _TS_REFERENCE = {
     9999: {
         "wpm": 106,
         "mistake_multiplier": 0.7842296801487086,
-        "layout": "qwerty",
         "scroll_speed_factor": 1.044618877620454,
         "overshoot_radius": 103.3084586449093,
         "dwell_min": 29,
@@ -79,7 +75,6 @@ def test_cross_language_parity_with_typescript():
         p = profile_from_seed(seed)
         assert p.typing.wpm == ref["wpm"], seed
         assert abs(p.typing.mistake_multiplier - ref["mistake_multiplier"]) < 1e-9, seed
-        assert p.typing.layout == ref["layout"], seed
         assert abs(p.scroll.speed_factor - ref["scroll_speed_factor"]) < 1e-9, seed
         assert abs(p.overshoot.radius - ref["overshoot_radius"]) < 1e-9, seed
         assert p.overshoot.dwell.min_ms == ref["dwell_min"], seed

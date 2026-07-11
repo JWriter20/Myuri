@@ -7,43 +7,21 @@ import { FAR_KEY_THRESHOLD } from './config.js'
 import type { Rng } from '../rng.js'
 
 export class KeyboardLayout {
-  private layoutName: string
   private grid: string[][]
   private posMap: Map<string, [number, number]>
   private directAccents: Set<string>
   private composedAccents: Set<string>
 
-  constructor(layoutName: string = 'qwerty') {
-    this.layoutName = layoutName
-    this.grid = this.loadLayout(layoutName)
+  constructor() {
+    this.grid = [
+      [...'`1234567890-='],
+      [...'qwertyuiop[]\\'],
+      [..."asdfghjkl;'"],
+      [...'zxcvbnm,./']
+    ]
     this.posMap = this.buildPosMap()
-
-    if (layoutName === 'azerty') {
-      this.directAccents = new Set('éèàùç'.split(''))
-      this.composedAccents = new Set('âêîôûäëïöü'.split(''))
-    } else {
-      this.directAccents = new Set()
-      this.composedAccents = new Set('âêîôûäëïöüéèàùç'.split(''))
-    }
-  }
-
-  private loadLayout(name: string): string[][] {
-    if (name === 'qwerty') {
-      return [
-        [...'`1234567890-='],
-        [...'qwertyuiop[]\\'],
-        [..."asdfghjkl;'"],
-        [...'zxcvbnm,./']
-      ]
-    } else if (name === 'azerty') {
-      return [
-        [...'&é"\'(-è_çà)='],
-        [...'azertyuiop^$'],
-        [...'qsdfghjklmù*'],
-        [...'wxcvbn,;:!']
-      ]
-    }
-    throw new Error(`Unsupported layout: '${name}'. Use 'qwerty' or 'azerty'.`)
+    this.directAccents = new Set()
+    this.composedAccents = new Set('âêîôûäëïöüéèàùç'.split(''))
   }
 
   private buildPosMap(): Map<string, [number, number]> {
@@ -53,18 +31,6 @@ export class KeyboardLayout {
         mapping.set(this.grid[r][c], [r, c])
       }
     }
-
-    if (this.layoutName === 'azerty') {
-      const row0 = '&é"\'(-è_çà)'
-      const digits = '1234567890'
-      for (let i = 0; i < digits.length; i++) {
-        const baseChar = row0[i]
-        if (mapping.has(baseChar) && !mapping.has(digits[i])) {
-          mapping.set(digits[i], mapping.get(baseChar)!)
-        }
-      }
-    }
-
     return mapping
   }
 

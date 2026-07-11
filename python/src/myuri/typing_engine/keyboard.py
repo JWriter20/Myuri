@@ -28,51 +28,22 @@ def _strip_combining_marks(text: str) -> str:
 
 
 class KeyboardLayout:
-    def __init__(self, layout_name: str = "qwerty") -> None:
-        self._layout_name = layout_name
-        self._grid = self._load_layout(layout_name)
+    def __init__(self) -> None:
+        self._grid = [
+            list("`1234567890-="),
+            list("qwertyuiop[]\\"),
+            list("asdfghjkl;'"),
+            list("zxcvbnm,./"),
+        ]
         self._pos_map = self._build_pos_map()
-
-        self._direct_accents: Set[str]
-        self._composed_accents: Set[str]
-        if layout_name == "azerty":
-            self._direct_accents = set("éèàùç")
-            self._composed_accents = set("âêîôûäëïöü")
-        else:
-            self._direct_accents = set()
-            self._composed_accents = set("âêîôûäëïöüéèàùç")
-
-    def _load_layout(self, name: str) -> List[List[str]]:
-        if name == "qwerty":
-            return [
-                list("`1234567890-="),
-                list("qwertyuiop[]\\"),
-                list("asdfghjkl;'"),
-                list("zxcvbnm,./"),
-            ]
-        elif name == "azerty":
-            return [
-                list("&é\"'(-è_çà)="),
-                list("azertyuiop^$"),
-                list("qsdfghjklmù*"),
-                list("wxcvbn,;:!"),
-            ]
-        raise ValueError(f"Unsupported layout: '{name}'. Use 'qwerty' or 'azerty'.")
+        self._direct_accents: Set[str] = set()
+        self._composed_accents: Set[str] = set("âêîôûäëïöüéèàùç")
 
     def _build_pos_map(self) -> Dict[str, Tuple[int, int]]:
         mapping: Dict[str, Tuple[int, int]] = {}
         for r, row in enumerate(self._grid):
             for c, char in enumerate(row):
                 mapping[char] = (r, c)
-
-        if self._layout_name == "azerty":
-            row0 = "&é\"'(-è_çà)"
-            digits = "1234567890"
-            for i, digit in enumerate(digits):
-                base_char = row0[i]
-                if base_char in mapping and digit not in mapping:
-                    mapping[digit] = mapping[base_char]
-
         return mapping
 
     def _normalize_char(self, char: str) -> str:

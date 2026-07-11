@@ -26,7 +26,6 @@ export interface TyperInput {
 
 export interface HumanTyperOptions {
   wpm?: number
-  layout?: 'qwerty' | 'azerty'
   mistakeMultiplier?: number
   /** Per-key hold (keydown→keyup) ms, sampled in [min, max]. Default {30,50}. */
   keyDelay?: { min: number; max: number }
@@ -55,7 +54,6 @@ function charToKey(char: string): string {
 export class HumanTyper {
   private input: TyperInput
   private wpm: number
-  private layout: 'qwerty' | 'azerty'
   private mistakeMultiplier: number
   private onCharacterCallback?: (char: string, delayMs: number) => void
   private onMistakeCallback?: (info: { typedChar: string }) => void
@@ -70,7 +68,6 @@ export class HumanTyper {
   constructor(input: TyperInput, options?: HumanTyperOptions) {
     this.input = input
     this.wpm = options?.wpm ?? DEFAULT_WPM
-    this.layout = options?.layout ?? 'qwerty'
     this.mistakeMultiplier = options?.mistakeMultiplier ?? 1.0
     this.onCharacterCallback = options?.onCharacter
     this.onMistakeCallback = options?.onMistake
@@ -101,7 +98,6 @@ export class HumanTyper {
     const typer = new MarkovTyper(
       text,
       this.wpm,
-      this.layout,
       this.mistakeMultiplier,
       this.rng,
       this.sessionWpm

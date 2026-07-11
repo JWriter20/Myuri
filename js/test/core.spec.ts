@@ -42,7 +42,6 @@ describe('settings', () => {
     const before = defaultSettings.typing.wpm
     const s = resolveSettings({ typing: { wpm: 200 } })
     expect(s.typing.wpm).toBe(200)
-    expect(s.typing.layout).toBe(defaultSettings.typing.layout)
     expect(defaultSettings.typing.wpm).toBe(before)
   })
 })

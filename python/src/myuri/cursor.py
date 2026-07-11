@@ -290,7 +290,6 @@ class Cursor:
         self._typer = HumanTyper(
             _DriverTyperInput(driver),
             wpm=self._settings.typing.wpm,
-            layout=self._settings.typing.layout,
             mistake_multiplier=self._settings.typing.mistake_multiplier,
             rng=self._rng,
         )

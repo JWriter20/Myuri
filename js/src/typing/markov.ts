@@ -73,7 +73,6 @@ export class MarkovTyper {
   constructor(
     targetText: string,
     targetWpm: number = DEFAULT_WPM,
-    layout: string = 'qwerty',
     mistakeMultiplier: number = 1.0,
     rng: Rng,
     // Pre-resolved per-session WPM. When provided (e.g. sampled once by the
@@ -92,7 +91,7 @@ export class MarkovTyper {
     // Iterate by code point so astral chars (emoji, CJK extension) count as one
     // unit and are never split into lone surrogates.
     this.targetChars = Array.from(targetText)
-    this.keyboard = new KeyboardLayout(layout)
+    this.keyboard = new KeyboardLayout()
     this.mistakeMultiplier = mistakeMultiplier
     this.rng = rng
 

@@ -56,7 +56,6 @@ class HumanTyper:
         input: TyperInput,
         *,
         wpm: float = DEFAULT_WPM,
-        layout: str = "qwerty",
         mistake_multiplier: float = 1.0,
         rng: Optional[Rng] = None,
         on_character: Optional[Callable[[str, float], None]] = None,
@@ -65,7 +64,6 @@ class HumanTyper:
     ) -> None:
         self._input = input
         self._wpm = wpm
-        self._layout = layout
         self._mistake_multiplier = mistake_multiplier
         self._on_character = on_character
         self._on_mistake = on_mistake
@@ -91,7 +89,6 @@ class HumanTyper:
         typer = MarkovTyper(
             text,
             self._wpm,
-            self._layout,
             self._mistake_multiplier,
             self._rng,
             self._session_wpm,

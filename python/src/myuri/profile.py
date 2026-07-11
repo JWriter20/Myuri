@@ -45,10 +45,9 @@ def profile_from_seed(seed: int) -> MyuriSettings:
     # Typing.
     wpm = _round_half_up(_draw(rng, 80, 18, 35, 130))
     mistake_multiplier = _draw(rng, 1.0, 0.35, 0.4, 2.0)
-    # Always qwerty — the fleet's fingerprints are US-layout; still burn the
-    # draw so seed→profile streams stay stable.
+    # Layout knob removed (always qwerty); still burn its old draw so
+    # seed→profile streams stay stable.
     rng()
-    layout = "qwerty"
 
     # Scroll dynamics.
     scroll_speed_factor = _draw(rng, 1.0, 0.16, 0.75, 1.4)
@@ -83,7 +82,6 @@ def profile_from_seed(seed: int) -> MyuriSettings:
             },
             "typing": {
                 "wpm": wpm,
-                "layout": layout,
                 "mistake_multiplier": mistake_multiplier,
             },
         }

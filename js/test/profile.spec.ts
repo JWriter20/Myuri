@@ -22,7 +22,6 @@ describe('generateProfile', () => {
       expect(p.typing.wpm).toBeLessThanOrEqual(130)
       expect(p.typing.mistakeMultiplier).toBeGreaterThanOrEqual(0.4)
       expect(p.typing.mistakeMultiplier).toBeLessThanOrEqual(2.0)
-      expect(['qwerty', 'azerty']).toContain(p.typing.layout)
 
       expect(p.scroll.speedFactor).toBeGreaterThanOrEqual(0.75)
       expect(p.scroll.speedFactor).toBeLessThanOrEqual(1.4)

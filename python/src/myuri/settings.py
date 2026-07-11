@@ -11,13 +11,6 @@ import dataclasses
 from dataclasses import dataclass, field, is_dataclass
 from typing import Any, Dict, Optional
 
-try:
-    from typing import Literal
-except ImportError:  # pragma: no cover - py<3.8 fallback, not expected
-    Literal = None  # type: ignore[assignment]
-
-KeyboardLayout = Literal["qwerty", "azerty"]
-
 
 @dataclass
 class OvershootDwell:
@@ -69,10 +62,9 @@ class ScrollSettings:
 
 @dataclass
 class TypingSettings:
-    """Typing speed, keyboard layout, and mistake frequency."""
+    """Typing speed and mistake frequency."""
 
     wpm: float = 80
-    layout: KeyboardLayout = "qwerty"
     mistake_multiplier: float = 1.0
 
 

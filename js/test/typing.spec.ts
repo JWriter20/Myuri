@@ -127,7 +127,7 @@ describe('driver key routing (un-pressable code points)', () => {
     }
     const cursor = new Cursor(strictDriver, {
       seed: 42,
-      settings: { typing: { layout: 'azerty', mistakeMultiplier: 4, wpm: 2000, keyDelay: { min: 0, max: 0 } } },
+      settings: { typing: { mistakeMultiplier: 4, wpm: 2000, keyDelay: { min: 0, max: 0 } } },
     })
     await cursor.type('josé@example.com')
     expect(text).toBe('josé@example.com')

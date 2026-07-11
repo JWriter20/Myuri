@@ -121,7 +121,6 @@ export class Cursor {
     }
     this.typer = new HumanTyper(typerInput, {
       wpm: this.settings.typing.wpm,
-      layout: this.settings.typing.layout,
       mistakeMultiplier: this.settings.typing.mistakeMultiplier,
       keyDelay: this.settings.typing.keyDelay,
       rng: this.rng,
@@ -165,7 +164,6 @@ export class Cursor {
       },
       {
         wpm: this.settings.typing.wpm,
-        layout: this.settings.typing.layout,
         mistakeMultiplier: multiplier,
         keyDelay: this.settings.typing.keyDelay,
         rng: this.rng,

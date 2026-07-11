@@ -104,7 +104,6 @@ class MarkovTyper:
         self,
         target_text: str,
         target_wpm: float = DEFAULT_WPM,
-        layout: str = "qwerty",
         mistake_multiplier: float = 1.0,
         rng: Optional[Rng] = None,
         # Pre-resolved per-session WPM. When provided (e.g. sampled once by the
@@ -124,7 +123,7 @@ class MarkovTyper:
         # directly keeps astral chars (emoji, CJK extension) as single units —
         # never split into surrogates (unlike UTF-16 indexing).
         self._target_chars: List[str] = list(target_text)
-        self._keyboard = KeyboardLayout(layout)
+        self._keyboard = KeyboardLayout()
         self._mistake_multiplier = mistake_multiplier
         self._rng: Rng = rng
 

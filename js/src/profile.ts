@@ -45,10 +45,9 @@ export function generateProfile(seed: number): MyuriSettings {
   // Typing.
   const wpm = roundHalfUp(draw(rng, 80, 18, 35, 130))
   const mistakeMultiplier = draw(rng, 1.0, 0.35, 0.4, 2.0)
-  // Always qwerty — the fleet's fingerprints are US-layout; still burn the
-  // draw so seed→profile streams stay stable.
+  // Layout knob removed (always qwerty); still burn its old draw so
+  // seed→profile streams stay stable.
   rng()
-  const layout = 'qwerty' as const
 
   // Scroll dynamics.
   const scrollSpeedFactor = draw(rng, 1.0, 0.16, 0.75, 1.4)
@@ -82,7 +81,6 @@ export function generateProfile(seed: number): MyuriSettings {
     },
     typing: {
       wpm,
-      layout,
       mistakeMultiplier,
     },
   })
