@@ -39,6 +39,25 @@ const delay = async (ms: number): Promise<void> => {
 const pointInBox = (p: Vector, b: BoundingBox): boolean =>
   p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
 
+/** One pass of the container-aware scroll planner (see computeScrollPlan). */
+interface ScrollPlan {
+  /** Target's click region is on-screen, inside the clear band, and unoccluded. */
+  inView: boolean
+  /** Wheel delta for the chosen scroller this pass; 0 when nothing can move the target. */
+  deltaY: number
+  hoverX: number
+  hoverY: number
+  /** The chosen scroller is the page (drives wheel-multiplier calibration). */
+  isPage: boolean
+  /**
+   * Visible, clickable clip of the target: element rect ∩ ancestor scroller
+   * rects ∩ pinned-bar clear band. Null when nothing usable is on-screen —
+   * callers must NOT move toward the element in that case (that is the
+   * edge-riding failure mode this exists to prevent).
+   */
+  region: BoundingBox | null
+}
+
 /** Options accepted when constructing a Cursor. */
 export interface CursorOptions {
   /** PRNG seed. Same seed -> identical motion, scrolls, and typing rhythm. */
@@ -319,27 +338,40 @@ export class Cursor {
       // The mouse can only travel within the visible viewport, so a target
       // outside it (e.g. a form field far below the fold) must be scrolled in
       // first — via the stealthy wheel model, never an instant scrollIntoView.
-      // Loop like scroll(): the wheel multiplier calibrates on the first pass,
-      // so a single scroll can undershoot a far target.
+      // Loop over fresh plans: the wheel multiplier calibrates on the first
+      // pass (a single scroll can undershoot a far target), and each pass may
+      // escalate to an outer scroller once an inner one is exhausted.
       const scrollOpts: ScrollOptions = {
         finishPosition: this.settings.scroll.finishPosition,
         speedFactor: this.settings.scroll.speedFactor,
         realism: { ...this.settings.scroll.realism },
       }
-      for (let s = 0; s < 3 && !(await this.isElementInView(selector)); s++) {
-        await this.scrollToElement(selector, scrollOpts)
+      const finishPosition = scrollOpts.finishPosition ?? 0.5
+      let plan = await this.computeScrollPlan(selector, finishPosition)
+      for (let s = 0; s < 3 && plan && !plan.inView && Math.abs(plan.deltaY) >= 1; s++) {
+        await this.performScroll(plan, scrollOpts)
+        plan = await this.computeScrollPlan(selector, finishPosition)
       }
-
-      const box = await boundingBoxOf(this.driver, selector)
-      if (!box) {
+      if (!plan) {
         lastError = new Error(`myuri: element has no box: ${selector}`)
+        continue
+      }
+      // No usable on-screen region even after scrolling: fail the attempt
+      // WITHOUT moving. Walking toward a clamped point at the viewport edge
+      // (the old behavior) reads as robotic and can never land anyway.
+      if (!plan.region) {
+        lastError = new Error(
+          `myuri: could not bring ${selector} into view (off-screen or covered by a pinned overlay)`,
+        )
         continue
       }
 
       const excludeBoxes = await this.resolveExcludeBoxes(opts.excludeSelectors)
       // Widen the retry sample slightly each attempt to escape a repeated miss.
       const attemptOpts = attempt === 0 ? opts : { ...opts, widthPaddingPercentage: Math.max(0, (opts.widthPaddingPercentage ?? 25) - this.settings.correction.retrySpread * attempt) }
-      const destination = getRandomBoxPoint(box, attemptOpts, this.previous, excludeBoxes, this.rng)
+      // Sample from the on-screen clip of the target, so a partially covered
+      // or partially scrolled-in element is clicked on its visible part.
+      const destination = getRandomBoxPoint(plan.region, attemptOpts, this.previous, excludeBoxes, this.rng)
 
       const overshootThreshold = opts.overshootThreshold ?? Number.POSITIVE_INFINITY
       await this.moveAlong(destination, opts, shouldOvershoot(this.previous, destination, overshootThreshold))
@@ -469,9 +501,11 @@ export class Cursor {
       if (!found) throw new Error(`myuri: element not found: ${selector}`)
 
       const maxTries = opts.maxTries ?? 3
-      for (let attempt = 0; attempt < maxTries; attempt++) {
-        await this.scrollToElement(selector, opts)
-        if (await this.isElementInView(selector)) break
+      const finishPosition = opts.finishPosition ?? 0.5
+      let plan = await this.computeScrollPlan(selector, finishPosition)
+      for (let attempt = 0; attempt < maxTries && plan && !plan.inView && Math.abs(plan.deltaY) >= 1; attempt++) {
+        await this.performScroll(plan, opts)
+        plan = await this.computeScrollPlan(selector, finishPosition)
       }
     } finally {
       await this.endAction(wasRandom, { moveDelay: 0, randomizeMoveDelay: false })
@@ -479,21 +513,36 @@ export class Cursor {
   }
 
   /**
-   * Container-aware scroll plan: finds the target's nearest scrollable ancestor
-   * (a nested overflow:auto/scroll container, else the page), and computes the
-   * wheel delta + a hover point over that scroller — so a field inside an inner
-   * scroll region is actually revealed, not just page-scrolled. Ported from the
-   * StealthMouse behaviour (findScrollableParent + calculateScrollDistance) so
-   * motion stays functionally identical to the old cursor.
+   * Container-aware scroll plan. One pass computes:
+   *
+   *  - the CLEAR BAND: the viewport minus pinned (fixed/sticky) top/bottom bars,
+   *    probed at the target's column — a target behind a sticky action footer is
+   *    only reachable inside this band, so all positioning targets it rather
+   *    than raw viewport fractions (finishPosition·vh lands exactly on a 50vh
+   *    footer's edge);
+   *  - the CHOSEN SCROLLER: the innermost scrollable ancestor that can actually
+   *    MOVE the target toward finishPosition inside its own visible band. An
+   *    exhausted scroller (a top-anchored first option in a list already at
+   *    scrollTop 0) yields delta 0 and we ESCALATE to the next ancestor up the
+   *    chain, ending at the page. A position:fixed ancestor caps the chain:
+   *    window scroll cannot move anything inside it, so such targets are only
+   *    ever revealed by scrolling their own containers (via wheel over them);
+   *  - the CLICK REGION: the target's on-screen clip (element ∩ scroller rects
+   *    ∩ clear band), with occlusion judged across the region — not just the
+   *    center point, which passed for targets straddling a footer edge.
    */
-  private async computeScrollPlan(
-    selector: string,
-    finishPosition: number,
-  ): Promise<{ inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null> {
+  private async computeScrollPlan(selector: string, finishPosition: number): Promise<ScrollPlan | null> {
     const pad = Math.max(20, VIEWPORT_PADDING + 5)
     const from = this.previous
     return (await this.driver.evaluate(
-      (arg: { selector: string; finishPosition: number; pad: number; fromX: number; fromY: number }) => {
+      (arg: {
+        selector: string
+        finishPosition: number
+        pad: number
+        edge: number
+        fromX: number
+        fromY: number
+      }) => {
         function resolve(s: string): Element | null {
           // Playwright shadow-piercing selector (a >> b >> c): descend into each
           // matched element's shadow root for the next segment.
@@ -536,162 +585,272 @@ export class Cursor {
           const r = node.getRootNode() as ShadowRoot
           return r && r.host ? (r.host as Element) : null
         }
-        // Nearest scrollable ancestor; null = defer to page scroll.
-        let container: Element | null = null
+        const vh = window.innerHeight || document.documentElement.clientHeight
+        const vw = window.innerWidth || document.documentElement.clientWidth
+        const elRect = el.getBoundingClientRect()
+
+        // Every scrollable ancestor, innermost first. A position:fixed ancestor
+        // is a hard barrier: neither the page nor anything above it can move the
+        // target (fixed boxes don't move with window scroll), so the chain stops
+        // there — but the fixed element itself may be the scroller (sticky-bar
+        // form layouts), so it's tested for scrollability before the cut.
+        const chain: HTMLElement[] = []
+        let pageCanMoveTarget = true
         let cur = stepUp(el)
         let depth = 0
-        while (cur && depth < 50) {
+        while (cur && depth < 60 && cur !== document.documentElement) {
           const st = getComputedStyle(cur)
-          const hasScroll = cur.scrollHeight > cur.clientHeight
-          if (hasScroll && (st.overflowY === 'scroll' || st.overflowY === 'auto')) {
-            if (cur === document.documentElement) break
-            if (cur === document.body) {
-              if (document.documentElement.scrollHeight > window.innerHeight + 10) break
-              container = cur
-              break
+          const scrollable =
+            cur.scrollHeight > cur.clientHeight + 1 &&
+            (st.overflowY === 'scroll' || st.overflowY === 'auto')
+          if (cur === document.body) {
+            // body-as-scroller only matters when the page itself doesn't scroll.
+            if (scrollable && !(document.documentElement.scrollHeight > vh + 10)) {
+              chain.push(cur as HTMLElement)
             }
-            container = cur
+            break
+          }
+          if (scrollable) chain.push(cur as HTMLElement)
+          if (st.position === 'fixed') {
+            pageCanMoveTarget = false
             break
           }
           cur = stepUp(cur)
           depth++
         }
-        const isPage = !container
-        const scroller = (container || document.documentElement) as HTMLElement
-        const vh = window.innerHeight || document.documentElement.clientHeight
-        const vw = window.innerWidth || document.documentElement.clientWidth
-        const elRect = el.getBoundingClientRect()
-        const contRect = scroller.getBoundingClientRect()
 
-        // In-view is relative to the scroller's visible band, not just the page.
-        const top = isPage ? arg.pad : Math.max(arg.pad, contRect.top)
-        const bottom = isPage ? vh - arg.pad : Math.min(vh - arg.pad, contRect.bottom)
-        const geomInView = elRect.top >= top && elRect.bottom <= bottom
-        // Occlusion-aware: a target geometrically in the band but covered by a
-        // viewport-pinned element (fixed/sticky header or footer) is NOT reachable —
-        // treat it as out-of-view so the caller scrolls it toward finishPosition (0.5),
-        // clearing the header. Only pinned occluders count: anything that scrolls WITH
-        // the target (open dropdown layers, decorative wrappers) would re-occlude after
-        // every scroll and wedge the retry loop into its timeout.
-        let occluded = false
-        if (geomInView) {
-          const cx = Math.round(elRect.left + elRect.width / 2)
-          const cy = Math.round(elRect.top + elRect.height / 2)
-          const at = document.elementFromPoint(cx, cy)
-          if (at && at !== el && !el.contains(at) && !at.contains(el)) {
-            let n: Element | null = at
-            while (n && n !== document.body) {
-              const pos = getComputedStyle(n).position
-              if (pos === 'fixed' || pos === 'sticky') {
-                occluded = true
-                break
+        // Pinned occluder under a point: the nearest fixed/sticky ancestor of
+        // whatever elementFromPoint hits there — unless it's the target itself,
+        // one of its descendants, or one of its ancestors (a fixed scroll
+        // container is the thing we scroll, not an occluder). Only pinned
+        // occluders count: anything that scrolls WITH the target (open dropdown
+        // layers, decorative wrappers) would re-occlude after every scroll and
+        // wedge the retry loop into its timeout.
+        const pinnedRectAt = (x: number, y: number): { top: number; bottom: number } | null => {
+          const hit = document.elementFromPoint(x, y)
+          if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return null
+          let n: Element | null = hit
+          while (n && n !== document.body && n !== document.documentElement) {
+            const pos = getComputedStyle(n).position
+            if (pos === 'fixed' || pos === 'sticky') {
+              return n.contains(el) ? null : n.getBoundingClientRect()
+            }
+            n = stepUp(n)
+          }
+          return null
+        }
+
+        // Clear band: the viewport minus pinned bars, probed at the target's
+        // column. Iterates a few levels for stacked bars (banner over header).
+        let clearTop = arg.pad
+        let clearBottom = vh - arg.pad
+        const probeX = Math.min(Math.max(elRect.left + elRect.width / 2, 5), vw - 5)
+        for (let i = 0; i < 4; i++) {
+          const r = pinnedRectAt(probeX, clearTop + 1)
+          if (r && r.bottom > clearTop) clearTop = Math.min(r.bottom + 2, vh)
+          else break
+        }
+        for (let i = 0; i < 4; i++) {
+          const r = pinnedRectAt(probeX, clearBottom - 1)
+          if (r && r.top < clearBottom) clearBottom = Math.max(r.top - 2, 0)
+          else break
+        }
+        if (clearBottom - clearTop < 40) {
+          // Band collapsed (e.g. a full-screen fixed overlay): fall back to the
+          // padded viewport so scroll math stays sane; the region occlusion
+          // check below still reports the target unreachable if it truly is.
+          clearTop = arg.pad
+          clearBottom = vh - arg.pad
+        }
+
+        // Click region: the target's on-screen clip. Element rect ∩ every
+        // ancestor scroller's rect ∩ clear band ∩ viewport edges.
+        let clipTop = clearTop
+        let clipBottom = clearBottom
+        let clipLeft = arg.edge
+        let clipRight = vw - arg.edge
+        for (const c of chain) {
+          const cr = c.getBoundingClientRect()
+          clipTop = Math.max(clipTop, cr.top)
+          clipBottom = Math.min(clipBottom, cr.bottom)
+          clipLeft = Math.max(clipLeft, cr.left)
+          clipRight = Math.min(clipRight, cr.right)
+        }
+        const regionLeft = Math.max(elRect.left, clipLeft)
+        const regionTop = Math.max(elRect.top, clipTop)
+        const regionRight = Math.min(elRect.right, clipRight)
+        const regionBottom = Math.min(elRect.bottom, clipBottom)
+        const region =
+          regionRight - regionLeft >= 6 && regionBottom - regionTop >= 6
+            ? {
+                x: regionLeft,
+                y: regionTop,
+                width: regionRight - regionLeft,
+                height: regionBottom - regionTop,
               }
-              n = n.parentElement
+            : null
+
+        // Occlusion across the click region (center + 4 interior points), not
+        // just the element center — a target straddling a footer edge has a
+        // clear center but a covered click region.
+        let occluded = false
+        if (region) {
+          const cx = region.x + region.width / 2
+          const cy = region.y + region.height / 2
+          const samples: Array<[number, number]> = [
+            [cx, cy],
+            [cx - region.width * 0.3, cy],
+            [cx + region.width * 0.3, cy],
+            [cx, cy - region.height * 0.3],
+            [cx, cy + region.height * 0.3],
+          ]
+          occluded = samples.some(([px, py]) => pinnedRectAt(Math.round(px), Math.round(py)) != null)
+        }
+
+        const bandHeight = clipBottom - clipTop
+        const fullyVisible = elRect.top >= clipTop && elRect.bottom <= clipBottom
+        // A target taller than its band can never be fully contained; it's in
+        // view once it fills most of the band.
+        const tallTarget = elRect.height > bandHeight - 4
+        const inView =
+          region != null &&
+          !occluded &&
+          (fullyVisible || (tallTarget && region.height >= bandHeight * 0.6))
+
+        // Chosen scroller: innermost ancestor whose scroll can actually MOVE the
+        // target toward finishPosition inside ITS visible band (its rect ∩ outer
+        // scroller rects ∩ clear band). delta 0 = exhausted (or already placed):
+        // escalate to the next ancestor, ending at the page when permitted.
+        let chosen: HTMLElement | null = null
+        let chosenDelta = 0
+        let chosenIsPage = false
+        let hoverTop = clearTop
+        let hoverBottom = clearBottom
+        let hoverLeft = 5
+        let hoverRight = vw - 5
+        const steps = chain.length + (pageCanMoveTarget ? 1 : 0)
+        for (let i = 0; i < steps; i++) {
+          const isPageStep = i === chain.length
+          const node = isPageStep ? (document.documentElement as HTMLElement) : chain[i]
+          let bTop = clearTop
+          let bBottom = clearBottom
+          let bLeft = 5
+          let bRight = vw - 5
+          if (!isPageStep) {
+            const r = node.getBoundingClientRect()
+            bTop = Math.max(bTop, r.top)
+            bBottom = Math.min(bBottom, r.bottom)
+            bLeft = Math.max(bLeft, r.left)
+            bRight = Math.min(bRight, r.right)
+            for (let j = i + 1; j < chain.length; j++) {
+              const outer = chain[j].getBoundingClientRect()
+              bTop = Math.max(bTop, outer.top)
+              bBottom = Math.min(bBottom, outer.bottom)
+              bLeft = Math.max(bLeft, outer.left)
+              bRight = Math.min(bRight, outer.right)
             }
           }
-        }
-        const inView = geomInView && !occluded
-
-        // Two-level scroll: when the target sits in a scroll container that is
-        // ITSELF clipped by the viewport, its on-screen band is too small to fit
-        // the target — scrolling the container alone can never reveal it (the list
-        // scrolls perfectly but stays off-page). Retarget this pass to a PAGE scroll
-        // that brings the CONTAINER into view; the scroll() retry loop then scrolls
-        // the container on the next pass once it's on-screen.
-        // "Clipped" = the container could fit in the viewport but isn't fully on
-        // screen, so its visible band is a slice of its true height. Centering the
-        // target in the full container then lands it in the off-screen slice. Reveal
-        // the whole container with a page scroll first. (A container taller than the
-        // viewport can't be fully revealed — scroll it directly.)
-        const containerFitsViewport = contRect.height <= vh - 2 * arg.pad
-        const containerFullyVisible = contRect.top >= arg.pad && contRect.bottom <= vh - arg.pad
-        const containerClipped = !isPage && containerFitsViewport && !containerFullyVisible
-
-        const scrollIsPage = isPage || containerClipped
-        const scrollScroller = scrollIsPage ? document.documentElement : scroller
-        const scrollTargetRect = containerClipped ? contRect : elRect
-
-        const currentScroll = scrollIsPage ? window.scrollY : scrollScroller.scrollTop
-        const contHeight = scrollIsPage ? vh : contRect.height
-        const targetRelTop = scrollIsPage
-          ? scrollTargetRect.top + window.scrollY
-          : scrollTargetRect.top - contRect.top + currentScroll
-        const scrollHeight = scrollIsPage ? document.documentElement.scrollHeight : scrollScroller.scrollHeight
-        const maxScroll = Math.max(0, scrollHeight - contHeight)
-        const desired = targetRelTop - contHeight * arg.finishPosition
-        const clamped = Math.max(0, Math.min(desired, maxScroll))
-        const deltaY = clamped - currentScroll
-
-        // A point over the scroller so wheel events land on IT (not the page) —
-        // the NEAREST such point to the current cursor position. Humans scroll
-        // from wherever the mouse sits; jumping to screen-center first reads as
-        // robotic (the old vh/2 hover visibly yanked the cursor up the page).
-        // A point is only usable if no OTHER scrollable element sits between it
-        // and the intended scroller — a wheel over an inner scroller (open
-        // dropdown list, overflowing textarea) is consumed there, the intended
-        // scroll never happens, and the first-scroll multiplier calibration gets
-        // poisoned. Probe lateral offsets nearest-first; humans nudge sideways
-        // to the page gutter to scroll, so this stays natural.
-        // Hover targets the scroller we're actually wheeling: the page when the
-        // container is clipped (so the wheel scrolls the page, not the trapped list).
-        const clampX = (x: number) => scrollIsPage
-          ? Math.min(Math.max(x, 5), vw - 5)
-          : Math.min(Math.max(x, contRect.left + 5), contRect.right - 5)
-        let hoverY: number
-        if (scrollIsPage) {
-          hoverY = arg.fromY
-        } else {
-          const visTop = Math.max(contRect.top, 0)
-          const visBottom = Math.min(contRect.bottom, vh)
-          hoverY = Math.min(Math.max(arg.fromY, visTop + 5), visBottom - 5)
-        }
-        hoverY = Math.min(Math.max(hoverY, 5), vh - 5)
-
-        const wheelReachesScroller = (x: number, y: number): boolean => {
-          const hit = document.elementFromPoint(x, y)
-          if (!hit) return true
-          let n: Element | null = hit
-          const stop: Element | null = scrollIsPage ? null : scrollScroller
-          while (n && n !== stop && n !== document.documentElement && n !== document.body) {
-            const st = getComputedStyle(n)
-            if (n.scrollHeight > n.clientHeight + 1 && (st.overflowY === 'auto' || st.overflowY === 'scroll')) return false
-            n = n.parentElement
-          }
-          return true
-        }
-        let hoverX = clampX(arg.fromX)
-        for (const dx of [0, -60, 60, -120, 120, -200, 200]) {
-          const x = clampX(arg.fromX + dx)
-          if (wheelReachesScroller(x, hoverY)) {
-            hoverX = x
+          const bH = bBottom - bTop
+          // A band too small to ever show the target can't help — skip outward.
+          if (bH < Math.min(elRect.height, 24) + 6) continue
+          const desiredTop = bTop + Math.max(0, bH - elRect.height) * arg.finishPosition
+          const current = isPageStep ? window.scrollY : node.scrollTop
+          const maxScroll = isPageStep
+            ? Math.max(0, document.documentElement.scrollHeight - vh)
+            : Math.max(0, node.scrollHeight - node.clientHeight)
+          const target = Math.max(0, Math.min(current + (elRect.top - desiredTop), maxScroll))
+          const delta = target - current
+          if (Math.abs(delta) >= 1) {
+            chosen = node
+            chosenDelta = delta
+            chosenIsPage = isPageStep
+            hoverTop = bTop
+            hoverBottom = bBottom
+            hoverLeft = bLeft
+            hoverRight = bRight
             break
           }
         }
-        return { inView, deltaY, hoverX, hoverY, isPage: scrollIsPage }
+
+        // Hover: the NEAREST point to the cursor from which a wheel actually
+        // reaches the chosen scroller. Humans scroll from wherever the mouse
+        // sits and nudge toward a gutter when an inner scroller (open dropdown
+        // list, overflowing textarea) would swallow the wheel — so probe small
+        // lateral offsets first, then small vertical ones. For a container the
+        // walk up from the hit must MEET the scroller: a point over a fixed
+        // footer never scrolls the container behind it. The hover stays inside
+        // the scroller's visible band ∩ clear band, never over a pinned bar.
+        const clampHX = (x: number) =>
+          Math.min(Math.max(x, Math.max(hoverLeft + 5, 5)), Math.min(hoverRight - 5, vw - 5))
+        const clampHY = (y: number) =>
+          Math.min(Math.max(y, Math.max(hoverTop + 5, 5)), Math.min(hoverBottom - 5, vh - 5))
+        // Wheel routing matches Chromium: a wheel is consumed by the nearest
+        // scrollable ancestor that can still MOVE in the wheel's direction, and
+        // bubbles past one already at its limit. Treating every overflow:auto
+        // wrapper as a trap (the old probe) nudged the cursor sideways on
+        // layouts full of decorative scroll wrappers even though the wheel
+        // would have landed fine where it sat.
+        const consumesWheel = (n: Element): boolean => {
+          const st = getComputedStyle(n)
+          if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') return false
+          if (n.scrollHeight <= n.clientHeight + 1) return false
+          return chosenDelta > 0
+            ? n.scrollTop + n.clientHeight < n.scrollHeight - 1
+            : n.scrollTop > 1
+        }
+        const wheelReaches = (x: number, y: number): boolean => {
+          const hit = document.elementFromPoint(x, y)
+          if (!hit) return chosenIsPage
+          let n: Element | null = hit
+          while (n && n !== document.documentElement && n !== document.body) {
+            if (!chosenIsPage && n === chosen) return true
+            if (consumesWheel(n)) return false
+            n = stepUp(n)
+          }
+          return chosenIsPage
+        }
+        let hoverX = clampHX(arg.fromX)
+        let hoverY = clampHY(arg.fromY)
+        if (chosen) {
+          // Equal-distance probes break toward the side with more gutter room,
+          // so asymmetric layouts don't accumulate a systematic drift from a
+          // fixed left-first order.
+          const roomLeft = arg.fromX - Math.max(hoverLeft + 5, 5)
+          const roomRight = Math.min(hoverRight - 5, vw - 5) - arg.fromX
+          const lateral =
+            roomRight > roomLeft
+              ? [0, 60, -60, 120, -120, 200, -200]
+              : [0, -60, 60, -120, 120, -200, 200]
+          const baseY = hoverY
+          probe: for (const dy of [0, -40, 40, -90, 90]) {
+            const y = clampHY(baseY + dy)
+            for (const dx of lateral) {
+              const x = clampHX(arg.fromX + dx)
+              if (wheelReaches(x, y)) {
+                hoverX = x
+                hoverY = y
+                break probe
+              }
+            }
+          }
+        }
+        return { inView, deltaY: chosenDelta, hoverX, hoverY, isPage: chosenIsPage, region }
       },
-      { selector, finishPosition, pad, fromX: from.x, fromY: from.y },
-    )) as { inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null
+      { selector, finishPosition, pad, edge: VIEWPORT_PADDING, fromX: from.x, fromY: from.y },
+    )) as ScrollPlan | null
   }
 
-  private async isElementInView(selector: string): Promise<boolean> {
-    const plan = await this.computeScrollPlan(selector, 0.5)
-    return plan ? plan.inView : false
-  }
+  /** Execute one planned scroll pass: hover over the chosen scroller, wheel the delta. */
+  private async performScroll(plan: ScrollPlan, opts: ScrollOptions): Promise<void> {
+    const wantedDistance = plan.deltaY * (this.scrollMultiplier ?? 1)
+    if (Math.abs(wantedDistance) < 1) return
 
-  private async scrollToElement(selector: string, opts: ScrollOptions): Promise<void> {
-    const finishPosition = opts.finishPosition ?? 0.5
-    const plan = await this.computeScrollPlan(selector, finishPosition)
-    if (!plan || plan.inView) return
-
-    // Hover over the target's scroll container so the wheel scrolls IT, not the page.
+    // Hover over the chosen scroller so the wheel scrolls IT, not the page.
     await this.moveAlong(
       { x: plan.hoverX, y: plan.hoverY },
       { moveDelay: 0, randomizeMoveDelay: false },
       false,
     )
-
-    const wantedDistance = plan.deltaY * (this.scrollMultiplier ?? 1)
-    if (Math.abs(wantedDistance) < 1) return
 
     // Calibration reads window scroll, so only calibrate off page scrolls (the
     // wheel→px DPR ratio is identical for containers).
