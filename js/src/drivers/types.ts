@@ -119,13 +119,23 @@ export function defineDriver(driver: Driver): ResolvedDriver {
       await driver.up(mod)
     })
 
+  // Playwright/Puppeteer press() only knows named keys + US-layout printables;
+  // any other single code point (an AZERTY 'é' typo slip, emoji, CJK) throws
+  // "Unknown key" and aborts typing mid-field — insert those as text instead,
+  // exactly what Playwright's own keyboard.type() does for such characters.
+  const rawPress = driver.press.bind(driver)
+  const press = async (key: string, options?: PressOptions): Promise<void> => {
+    if (Array.from(key).length === 1 && !/^[\x20-\x7e]$/.test(key)) return insertText(key)
+    return rawPress(key, options)
+  }
+
   return {
     move: driver.move.bind(driver),
     click: driver.click.bind(driver),
     down: driver.down.bind(driver),
     up: driver.up.bind(driver),
     wheel: driver.wheel.bind(driver),
-    press: driver.press.bind(driver),
+    press,
     evaluate: driver.evaluate.bind(driver),
     insertText,
     setClipboard,

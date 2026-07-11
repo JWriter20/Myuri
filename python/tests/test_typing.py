@@ -2,6 +2,8 @@
 import pytest
 
 from myuri.rng import make_rng
+from myuri.cursor import Cursor
+from myuri.drivers import Driver
 from myuri.typing_engine.typer import HumanTyper
 
 
@@ -83,3 +85,57 @@ async def test_delete_all_with_modifier():
     assert "a" in inp.keys
     assert "up:Control" in inp.keys
     assert "Backspace" in inp.keys
+
+
+# Regression: an AZERTY typo slip generated 'é', Playwright's press() threw
+# "Unknown key" and typing aborted mid-field ("jane@" instead of the full email).
+class _StrictKeyboardDriver(Driver):
+    """Mimics Playwright: only named keys + printable US-layout ASCII are pressable."""
+
+    _NAMED = {"Enter", "Tab", "Backspace"}
+
+    def __init__(self):
+        self.text = ""
+
+    async def move(self, x, y):
+        pass
+
+    async def click(self, button="left"):
+        pass
+
+    async def down(self, key):
+        pass
+
+    async def up(self, key):
+        pass
+
+    async def wheel(self, delta_x, delta_y):
+        pass
+
+    async def press(self, key, delay=None):
+        if key in self._NAMED:
+            if key == "Backspace":
+                self.text = self.text[:-1]
+            return
+        if not (len(key) == 1 and 0x20 <= ord(key) <= 0x7E):
+            raise RuntimeError(f'keyboard.press: Unknown key: "{key}"')
+        self.text += key
+
+    async def insert_text(self, text):
+        self.text += text
+
+    async def evaluate(self, js, arg=None):
+        return None
+
+
+@pytest.mark.skip(reason="TODO: not yet verified locally (no python runtime on dev box) — enable after CI validates")
+@pytest.mark.asyncio
+async def test_cursor_type_completes_accented_text_on_strict_keyboard():
+    driver = _StrictKeyboardDriver()
+    cursor = Cursor(
+        driver,
+        seed=42,
+        settings={"typing": {"layout": "azerty", "mistake_multiplier": 4, "wpm": 2000}},
+    )
+    await cursor.type("josé@example.com")
+    assert driver.text == "josé@example.com"

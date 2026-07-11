@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { HumanTyper, type TyperInput } from '../src/typing/typer.js'
 import { makeRng } from '../src/rng.js'
+import { Cursor } from '../src/cursor.js'
+import { defineDriver, type Driver, type PageFunction } from '../src/drivers/types.js'
 
 function recordingInput(): { input: TyperInput; keys: string[] } {
   const keys: string[] = []
@@ -80,5 +82,54 @@ describe('HumanTyper', () => {
     expect(keys).toContain('a')
     expect(keys).toContain('up:Control')
     expect(keys).toContain('Backspace')
+  })
+})
+
+// Regression: an AZERTY typo slip generated 'é', Playwright's press() threw
+// "Unknown key" and typing aborted mid-field ("jane@" instead of the full email).
+describe('driver key routing (un-pressable code points)', () => {
+  it('defineDriver routes non-US-layout single code points through insertText', async () => {
+    const calls: string[] = []
+    const resolved = defineDriver({
+      async move() {},
+      async click() {},
+      async down() {},
+      async up() {},
+      async wheel() {},
+      async press(k) { calls.push(`press:${k}`) },
+      async insertText(t) { calls.push(`insert:${t}`) },
+      async evaluate<A, R>(_fn: PageFunction<A, R>, _arg: A): Promise<R> { return undefined as R },
+    })
+    for (const key of ['é', 'a', '@', 'Enter', '👍']) await resolved.press(key)
+    expect(calls).toEqual(['insert:é', 'press:a', 'press:@', 'press:Enter', 'insert:👍'])
+  })
+
+  it('cursor.type completes accented text against a US-layout-strict keyboard', async () => {
+    let text = ''
+    const NAMED = new Set(['Enter', 'Tab', 'Backspace'])
+    const strictDriver: Driver = {
+      async move() {},
+      async click() {},
+      async down() {},
+      async up() {},
+      async wheel() {},
+      async press(key) {
+        if (NAMED.has(key)) {
+          if (key === 'Backspace') text = text.slice(0, -1)
+          return
+        }
+        // Mimic Playwright: only printable US-layout ASCII is pressable.
+        if (!/^[\x20-\x7e]$/.test(key)) throw new Error(`keyboard.press: Unknown key: "${key}"`)
+        text += key
+      },
+      async insertText(t) { text += t },
+      async evaluate<A, R>(_fn: PageFunction<A, R>, _arg: A): Promise<R> { return undefined as R },
+    }
+    const cursor = new Cursor(strictDriver, {
+      seed: 42,
+      settings: { typing: { layout: 'azerty', mistakeMultiplier: 4, wpm: 2000, keyDelay: { min: 0, max: 0 } } },
+    })
+    await cursor.type('josé@example.com')
+    expect(text).toBe('josé@example.com')
   })
 })

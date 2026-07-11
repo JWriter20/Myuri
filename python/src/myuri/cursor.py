@@ -239,7 +239,13 @@ class _DriverTyperInput:
         self._d = driver
 
     async def press(self, key: str, delay: Optional[float] = None) -> None:
-        await self._d.press(key, delay)
+        # Playwright press() only knows named keys + US-layout printables; other
+        # single code points (an AZERTY 'é' typo slip, emoji) throw "Unknown key"
+        # and abort typing mid-field — insert those as text instead.
+        if len(key) == 1 and not (0x20 <= ord(key) <= 0x7E):
+            await self._d.insert_text(key)
+        else:
+            await self._d.press(key, delay)
 
     async def down(self, key: str) -> None:
         await self._d.down(key)
