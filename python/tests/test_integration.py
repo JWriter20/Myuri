@@ -1,8 +1,8 @@
 """Headless Cursor integration tests.
 
 Python can't run the JS page-functions locally, so the fake driver answers
-``evaluate`` by recognizing each payload (viewport / bounding-box / wait /
-point-hit / scroll) and returning canned geometry for a single element.
+``evaluate`` by recognizing each payload (scroll-plan / viewport / bounding-box /
+wait / point-hit / scroll) and returning canned geometry for a single element.
 """
 import pytest
 
@@ -35,6 +35,15 @@ class FakeDriver(Driver):
         self.calls.append(("press", key))
 
     async def evaluate(self, js, arg=None):
+        if "wheelReaches" in js:  # scroll plan: element visible, nothing to scroll
+            return {
+                "inView": True,
+                "deltaY": 0,
+                "hoverX": arg["fromX"],
+                "hoverY": arg["fromY"],
+                "isPage": True,
+                "region": dict(RECT),
+            }
         if "innerWidth" in js:
             return {"width": 1280, "height": 720}
         if "requireVisible" in js:

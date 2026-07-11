@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import Any, Optional
 
 from .drivers.base import Driver, define_driver  # noqa: F401 (re-exported convenience)
@@ -19,6 +20,7 @@ from .geometry import (
 from .motion.scroll_model import scroll_model
 from .options import ClickOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import (
+    _RESOLVER,
     bounding_box_of,
     point_hits_target,
     scroll_metrics_of,
@@ -40,6 +42,189 @@ async def _delay(ms: float) -> None:
 
 def _point_in_box(p: Vector, b: BoundingBox) -> bool:
     return b.x <= p.x <= b.x + b.width and b.y <= p.y <= b.y + b.height
+
+
+# Container-aware scroll plan (mirror of ``computeScrollPlan`` in js/src/cursor.ts;
+# see that function for the full design commentary). One pass computes:
+#   - the CLEAR BAND: viewport minus pinned (fixed/sticky) bars, probed at the
+#     target's column;
+#   - the CHOSEN SCROLLER: innermost scrollable ancestor that can actually move
+#     the target toward finishPosition inside its visible band, escalating
+#     outward past exhausted scrollers; a position:fixed ancestor drops the page
+#     step entirely (window scroll cannot move anything inside it);
+#   - the CLICK REGION: the target's on-screen clip, with occlusion judged
+#     across the region rather than the center point;
+#   - the HOVER point: nearest point from which a wheel reaches the chosen
+#     scroller, modeling Chromium's routing (a wrapper at its scroll limit in
+#     the wheel's direction bubbles the wheel up, so it is not a trap), with
+#     equal-distance probes breaking toward the roomier gutter.
+_SCROLL_PLAN_JS = (
+    "(arg) => {" + _RESOLVER + """
+  var el = resolve(arg.selector);
+  if (!el) return null;
+  function stepUp(node){
+    if (node.parentElement) return node.parentElement;
+    var r = node.getRootNode ? node.getRootNode() : null;
+    return r && r.host ? r.host : null;
+  }
+  var vh = window.innerHeight || document.documentElement.clientHeight;
+  var vw = window.innerWidth || document.documentElement.clientWidth;
+  var elRect = el.getBoundingClientRect();
+
+  var chain = [];
+  var pageCanMoveTarget = true;
+  var cur = stepUp(el);
+  var depth = 0;
+  while (cur && depth < 60 && cur !== document.documentElement) {
+    var st = getComputedStyle(cur);
+    var scrollable = cur.scrollHeight > cur.clientHeight + 1 &&
+      (st.overflowY === 'scroll' || st.overflowY === 'auto');
+    if (cur === document.body) {
+      if (scrollable && !(document.documentElement.scrollHeight > vh + 10)) chain.push(cur);
+      break;
+    }
+    if (scrollable) chain.push(cur);
+    if (st.position === 'fixed') { pageCanMoveTarget = false; break; }
+    cur = stepUp(cur);
+    depth++;
+  }
+
+  function pinnedRectAt(x, y) {
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return null;
+    var n = hit;
+    while (n && n !== document.body && n !== document.documentElement) {
+      var pos = getComputedStyle(n).position;
+      if (pos === 'fixed' || pos === 'sticky') return n.contains(el) ? null : n.getBoundingClientRect();
+      n = stepUp(n);
+    }
+    return null;
+  }
+
+  var clearTop = arg.pad;
+  var clearBottom = vh - arg.pad;
+  var probeX = Math.min(Math.max(elRect.left + elRect.width / 2, 5), vw - 5);
+  var i, r;
+  for (i = 0; i < 4; i++) {
+    r = pinnedRectAt(probeX, clearTop + 1);
+    if (r && r.bottom > clearTop) clearTop = Math.min(r.bottom + 2, vh); else break;
+  }
+  for (i = 0; i < 4; i++) {
+    r = pinnedRectAt(probeX, clearBottom - 1);
+    if (r && r.top < clearBottom) clearBottom = Math.max(r.top - 2, 0); else break;
+  }
+  if (clearBottom - clearTop < 40) { clearTop = arg.pad; clearBottom = vh - arg.pad; }
+
+  var clipTop = clearTop, clipBottom = clearBottom, clipLeft = arg.edge, clipRight = vw - arg.edge;
+  var cr;
+  for (i = 0; i < chain.length; i++) {
+    cr = chain[i].getBoundingClientRect();
+    clipTop = Math.max(clipTop, cr.top); clipBottom = Math.min(clipBottom, cr.bottom);
+    clipLeft = Math.max(clipLeft, cr.left); clipRight = Math.min(clipRight, cr.right);
+  }
+  var regionLeft = Math.max(elRect.left, clipLeft);
+  var regionTop = Math.max(elRect.top, clipTop);
+  var regionRight = Math.min(elRect.right, clipRight);
+  var regionBottom = Math.min(elRect.bottom, clipBottom);
+  var region = (regionRight - regionLeft >= 6 && regionBottom - regionTop >= 6)
+    ? { x: regionLeft, y: regionTop, width: regionRight - regionLeft, height: regionBottom - regionTop }
+    : null;
+
+  var occluded = false;
+  if (region) {
+    var ccx = region.x + region.width / 2, ccy = region.y + region.height / 2;
+    var samples = [
+      [ccx, ccy],
+      [ccx - region.width * 0.3, ccy], [ccx + region.width * 0.3, ccy],
+      [ccx, ccy - region.height * 0.3], [ccx, ccy + region.height * 0.3]
+    ];
+    for (i = 0; i < samples.length; i++) {
+      if (pinnedRectAt(Math.round(samples[i][0]), Math.round(samples[i][1])) != null) { occluded = true; break; }
+    }
+  }
+
+  var bandHeight = clipBottom - clipTop;
+  var fullyVisible = elRect.top >= clipTop && elRect.bottom <= clipBottom;
+  var tallTarget = elRect.height > bandHeight - 4;
+  var inView = region != null && !occluded &&
+    (fullyVisible || (tallTarget && region.height >= bandHeight * 0.6));
+
+  var chosen = null, chosenDelta = 0, chosenIsPage = false;
+  var hoverTop = clearTop, hoverBottom = clearBottom, hoverLeft = 5, hoverRight = vw - 5;
+  var steps = chain.length + (pageCanMoveTarget ? 1 : 0);
+  for (i = 0; i < steps; i++) {
+    var isPageStep = i === chain.length;
+    var node = isPageStep ? document.documentElement : chain[i];
+    var bTop = clearTop, bBottom = clearBottom, bLeft = 5, bRight = vw - 5;
+    if (!isPageStep) {
+      var nr = node.getBoundingClientRect();
+      bTop = Math.max(bTop, nr.top); bBottom = Math.min(bBottom, nr.bottom);
+      bLeft = Math.max(bLeft, nr.left); bRight = Math.min(bRight, nr.right);
+      for (var j = i + 1; j < chain.length; j++) {
+        var outer = chain[j].getBoundingClientRect();
+        bTop = Math.max(bTop, outer.top); bBottom = Math.min(bBottom, outer.bottom);
+        bLeft = Math.max(bLeft, outer.left); bRight = Math.min(bRight, outer.right);
+      }
+    }
+    var bH = bBottom - bTop;
+    if (bH < Math.min(elRect.height, 24) + 6) continue;
+    var desiredTop = bTop + Math.max(0, bH - elRect.height) * arg.finishPosition;
+    var current = isPageStep ? window.scrollY : node.scrollTop;
+    var maxScroll = isPageStep
+      ? Math.max(0, document.documentElement.scrollHeight - vh)
+      : Math.max(0, node.scrollHeight - node.clientHeight);
+    var target = Math.max(0, Math.min(current + (elRect.top - desiredTop), maxScroll));
+    var delta = target - current;
+    if (Math.abs(delta) >= 1) {
+      chosen = node; chosenDelta = delta; chosenIsPage = isPageStep;
+      hoverTop = bTop; hoverBottom = bBottom; hoverLeft = bLeft; hoverRight = bRight;
+      break;
+    }
+  }
+
+  function clampHX(x){ return Math.min(Math.max(x, Math.max(hoverLeft + 5, 5)), Math.min(hoverRight - 5, vw - 5)); }
+  function clampHY(y){ return Math.min(Math.max(y, Math.max(hoverTop + 5, 5)), Math.min(hoverBottom - 5, vh - 5)); }
+  function consumesWheel(n){
+    var st = getComputedStyle(n);
+    if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') return false;
+    if (n.scrollHeight <= n.clientHeight + 1) return false;
+    return chosenDelta > 0
+      ? n.scrollTop + n.clientHeight < n.scrollHeight - 1
+      : n.scrollTop > 1;
+  }
+  function wheelReaches(x, y){
+    var hit = document.elementFromPoint(x, y);
+    if (!hit) return chosenIsPage;
+    var n = hit;
+    while (n && n !== document.documentElement && n !== document.body) {
+      if (!chosenIsPage && n === chosen) return true;
+      if (consumesWheel(n)) return false;
+      n = stepUp(n);
+    }
+    return chosenIsPage;
+  }
+  var hoverX = clampHX(arg.fromX);
+  var hoverY = clampHY(arg.fromY);
+  if (chosen) {
+    var roomLeft = arg.fromX - Math.max(hoverLeft + 5, 5);
+    var roomRight = Math.min(hoverRight - 5, vw - 5) - arg.fromX;
+    var lateral = roomRight > roomLeft
+      ? [0, 60, -60, 120, -120, 200, -200]
+      : [0, -60, 60, -120, 120, -200, 200];
+    var dys = [0, -40, 40, -90, 90];
+    var baseY = hoverY;
+    var found = false;
+    for (var a = 0; a < dys.length && !found; a++) {
+      var y = clampHY(baseY + dys[a]);
+      for (var b = 0; b < lateral.length; b++) {
+        var x = clampHX(arg.fromX + lateral[b]);
+        if (wheelReaches(x, y)) { hoverX = x; hoverY = y; found = true; break; }
+      }
+    }
+  }
+  return { inView: inView, deltaY: chosenDelta, hoverX: hoverX, hoverY: hoverY, isPage: chosenIsPage, region: region };
+}"""
+)
 
 
 def _pick(opt: Any, name: str, default: Any) -> Any:
@@ -240,7 +425,7 @@ class Cursor:
         deadline = (time.monotonic() + timeout / 1000.0) if timeout is not None else None
         last_error: Optional[Exception] = None
 
-        for _ in range(max_tries):
+        for attempt in range(max_tries):
             if self._driver.is_closed():
                 return
             remaining_ms = wait_ms if deadline is None else (deadline - time.monotonic()) * 1000.0
@@ -250,12 +435,56 @@ class Cursor:
             if not found:
                 last_error = RuntimeError(f"myuri: element not found or not visible: {selector}")
                 continue
-            box = await bounding_box_of(self._driver, selector)
-            if not box:
+
+            # The mouse can only travel within the visible viewport, so a target
+            # outside it must be scrolled in first — via the stealthy wheel
+            # model, never an instant scrollIntoView. Loop over fresh plans: the
+            # wheel multiplier calibrates on the first pass, and each pass may
+            # escalate to an outer scroller once an inner one is exhausted.
+            scroll_opts = ScrollOptions(
+                finish_position=self._settings.scroll.finish_position,
+                speed_factor=self._settings.scroll.speed_factor,
+            )
+            finish_position = scroll_opts.finish_position or 0.5
+            plan = await self._compute_scroll_plan(selector, finish_position)
+            for _ in range(3):
+                if not plan or plan["inView"] or abs(plan["deltaY"]) < 1:
+                    break
+                await self._perform_scroll(plan, scroll_opts)
+                plan = await self._compute_scroll_plan(selector, finish_position)
+            if not plan:
                 last_error = RuntimeError(f"myuri: element has no box: {selector}")
                 continue
+            # No usable on-screen region even after scrolling: fail the attempt
+            # WITHOUT moving. Walking toward a clamped point at the viewport
+            # edge reads as robotic and can never land anyway.
+            if not plan.get("region"):
+                last_error = RuntimeError(
+                    f"myuri: could not bring {selector} into view (off-screen or covered by a pinned overlay)"
+                )
+                continue
+            region = plan["region"]
+            # Sample from the on-screen clip of the target, so a partially
+            # covered or partially scrolled-in element is clicked on its
+            # visible part.
+            box = BoundingBox(
+                x=region["x"], y=region["y"], width=region["width"], height=region["height"]
+            )
             exclude_boxes = await self._resolve_exclude_boxes(_pick(options, "exclude_selectors", None))
-            destination = get_random_box_point(box, options, self._previous, exclude_boxes, self._rng)
+            # Widen the retry sample slightly each attempt to escape a repeated miss.
+            attempt_opts = options
+            if attempt > 0:
+                narrowed = max(
+                    0.0,
+                    _pick(options, "width_padding_percentage", 25)
+                    - self._settings.correction.retry_spread * attempt,
+                )
+                attempt_opts = (
+                    replace(options, width_padding_percentage=narrowed)
+                    if options is not None
+                    else MoveOptions(width_padding_percentage=narrowed)
+                )
+            destination = get_random_box_point(box, attempt_opts, self._previous, exclude_boxes, self._rng)
             await self._move_along(destination, options, should_overshoot(self._previous, destination, overshoot_threshold))
             final_box = await bounding_box_of(self._driver, selector)
             if final_box and _point_in_box(self._previous, final_box) and await point_hits_target(self._driver, self._previous, selector):
@@ -327,33 +556,45 @@ class Cursor:
             wait_ms = _pick(options, "wait_for_selector", 10000)
             if not await wait_for_element(self._driver, selector, "visible", wait_ms):
                 raise RuntimeError(f"myuri: element not found: {selector}")
+            finish_position = _pick(options, "finish_position", self._settings.scroll.finish_position)
+            plan = await self._compute_scroll_plan(selector, finish_position)
             for _ in range(_pick(options, "max_tries", 3)):
-                await self._scroll_to_element(selector, options)
-                if await self._is_element_in_view(selector):
+                if not plan or plan["inView"] or abs(plan["deltaY"]) < 1:
                     break
+                await self._perform_scroll(plan, options)
+                plan = await self._compute_scroll_plan(selector, finish_position)
         finally:
             await self._end_action(was_random, 0, False)
 
-    async def _is_element_in_view(self, selector: str) -> bool:
-        box = await bounding_box_of(self._driver, selector)
-        if not box:
-            return False
-        vp = await viewport_of(self._driver)
+    async def _compute_scroll_plan(self, selector: str, finish_position: float) -> Optional[dict]:
+        """One planning pass; see ``_SCROLL_PLAN_JS`` for what it computes."""
         pad = max(20, VIEWPORT_PADDING + 5)
-        return box.y >= pad and box.y + box.height <= vp.height - pad
+        return await self._driver.evaluate(
+            _SCROLL_PLAN_JS,
+            {
+                "selector": selector,
+                "finishPosition": finish_position,
+                "pad": pad,
+                "edge": VIEWPORT_PADDING,
+                "fromX": self._previous.x,
+                "fromY": self._previous.y,
+            },
+        )
 
-    async def _scroll_to_element(self, selector: str, options) -> None:
-        box = await bounding_box_of(self._driver, selector)
-        if not box:
-            return
-        vp = await viewport_of(self._driver)
-        finish_position = _pick(options, "finish_position", self._settings.scroll.finish_position)
-        target_y = vp.height * finish_position
-        element_center_y = box.y + box.height / 2
-        wanted = (element_center_y - target_y) * (self._scroll_multiplier or 1)
+    async def _perform_scroll(self, plan: dict, options) -> None:
+        """Execute one planned pass: hover over the chosen scroller, wheel the delta."""
+        wanted = plan["deltaY"] * (self._scroll_multiplier or 1)
         if abs(wanted) < 1:
             return
-        pre = (await scroll_metrics_of(self._driver)).offset
+        # Hover over the chosen scroller so the wheel scrolls IT, not the page.
+        await self._move_along(
+            Vector(plan["hoverX"], plan["hoverY"]),
+            MoveToOptions(move_delay=0, randomize_move_delay=False),
+            False,
+        )
+        # Calibration reads window scroll, so only calibrate off page scrolls
+        # (the wheel→px DPR ratio is identical for containers).
+        pre = (await scroll_metrics_of(self._driver)).offset if plan["isPage"] else None
         realism = _pick(options, "realism", None)
         speed_irregularity = getattr(realism, "speed_irregularity", None) if realism else None
         if speed_irregularity is None:
@@ -373,10 +614,16 @@ class Cursor:
         if abs(round(accumulator)) >= 1:
             await self._driver.wheel(0, round(accumulator))
 
-        post = await self._settle_scroll(pre)
-        actual = post - pre
-        if self._scroll_multiplier is None and abs(wanted) > 10 and abs(actual) > 10:
-            self._scroll_multiplier = round((wanted / actual) * 100) / 100
+        if pre is not None:
+            post = await self._settle_scroll(pre)
+            actual = post - pre
+            if self._scroll_multiplier is None and abs(wanted) > 10 and abs(actual) > 10:
+                # Clamp: a first scroll truncated by maxScroll (or partially
+                # consumed by an inner scroller) would otherwise poison every
+                # subsequent scroll with a wildly inflated multiplier.
+                self._scroll_multiplier = min(3.0, max(0.3, round((wanted / actual) * 100) / 100))
+        else:
+            await _delay(120)  # let the container settle (window-scroll settle doesn't apply)
 
     async def _settle_scroll(self, previous_offset: float) -> float:
         last = previous_offset
