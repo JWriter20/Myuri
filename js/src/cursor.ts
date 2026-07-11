@@ -592,12 +592,31 @@ export class Cursor {
         }
         const inView = geomInView && !occluded
 
-        const currentScroll = isPage ? window.scrollY : scroller.scrollTop
-        const contHeight = isPage ? vh : contRect.height
-        const targetRelTop = isPage
-          ? elRect.top + window.scrollY
-          : elRect.top - contRect.top + currentScroll
-        const scrollHeight = isPage ? document.documentElement.scrollHeight : scroller.scrollHeight
+        // Two-level scroll: when the target sits in a scroll container that is
+        // ITSELF clipped by the viewport, its on-screen band is too small to fit
+        // the target — scrolling the container alone can never reveal it (the list
+        // scrolls perfectly but stays off-page). Retarget this pass to a PAGE scroll
+        // that brings the CONTAINER into view; the scroll() retry loop then scrolls
+        // the container on the next pass once it's on-screen.
+        // "Clipped" = the container could fit in the viewport but isn't fully on
+        // screen, so its visible band is a slice of its true height. Centering the
+        // target in the full container then lands it in the off-screen slice. Reveal
+        // the whole container with a page scroll first. (A container taller than the
+        // viewport can't be fully revealed — scroll it directly.)
+        const containerFitsViewport = contRect.height <= vh - 2 * arg.pad
+        const containerFullyVisible = contRect.top >= arg.pad && contRect.bottom <= vh - arg.pad
+        const containerClipped = !isPage && containerFitsViewport && !containerFullyVisible
+
+        const scrollIsPage = isPage || containerClipped
+        const scrollScroller = scrollIsPage ? document.documentElement : scroller
+        const scrollTargetRect = containerClipped ? contRect : elRect
+
+        const currentScroll = scrollIsPage ? window.scrollY : scrollScroller.scrollTop
+        const contHeight = scrollIsPage ? vh : contRect.height
+        const targetRelTop = scrollIsPage
+          ? scrollTargetRect.top + window.scrollY
+          : scrollTargetRect.top - contRect.top + currentScroll
+        const scrollHeight = scrollIsPage ? document.documentElement.scrollHeight : scrollScroller.scrollHeight
         const maxScroll = Math.max(0, scrollHeight - contHeight)
         const desired = targetRelTop - contHeight * arg.finishPosition
         const clamped = Math.max(0, Math.min(desired, maxScroll))
@@ -613,11 +632,13 @@ export class Cursor {
         // scroll never happens, and the first-scroll multiplier calibration gets
         // poisoned. Probe lateral offsets nearest-first; humans nudge sideways
         // to the page gutter to scroll, so this stays natural.
-        const clampX = (x: number) => isPage
+        // Hover targets the scroller we're actually wheeling: the page when the
+        // container is clipped (so the wheel scrolls the page, not the trapped list).
+        const clampX = (x: number) => scrollIsPage
           ? Math.min(Math.max(x, 5), vw - 5)
           : Math.min(Math.max(x, contRect.left + 5), contRect.right - 5)
         let hoverY: number
-        if (isPage) {
+        if (scrollIsPage) {
           hoverY = arg.fromY
         } else {
           const visTop = Math.max(contRect.top, 0)
@@ -630,7 +651,7 @@ export class Cursor {
           const hit = document.elementFromPoint(x, y)
           if (!hit) return true
           let n: Element | null = hit
-          const stop: Element | null = isPage ? null : scroller
+          const stop: Element | null = scrollIsPage ? null : scrollScroller
           while (n && n !== stop && n !== document.documentElement && n !== document.body) {
             const st = getComputedStyle(n)
             if (n.scrollHeight > n.clientHeight + 1 && (st.overflowY === 'auto' || st.overflowY === 'scroll')) return false
@@ -646,7 +667,7 @@ export class Cursor {
             break
           }
         }
-        return { inView, deltaY, hoverX, hoverY, isPage }
+        return { inView, deltaY, hoverX, hoverY, isPage: scrollIsPage }
       },
       { selector, finishPosition, pad, fromX: from.x, fromY: from.y },
     )) as { inView: boolean; deltaY: number; hoverX: number; hoverY: number; isPage: boolean } | null
