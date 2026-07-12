@@ -11,6 +11,10 @@ import { type BoundingBox, type ViewportSize } from './math.js'
  *
  * Supported selector dialects:
  *   - CSS (default), transparently pierced through open shadow roots
+ *   - `a >> b`: descend into a's open shadow root for the next segment
+ *   - `a >>> b`: descend into a's same-origin iframe document (cross-origin
+ *     frames resolve to null). Geometry is translated into top-page viewport
+ *     coordinates, since mouse input is dispatched at page level.
  *   - XPath: prefix with `xpath=`, or a string beginning with `/` or `(`
  */
 
@@ -35,7 +39,7 @@ export async function viewportOf(driver: ResolvedDriver): Promise<ViewportSize> 
   return vp
 }
 
-/** Bounding box of a selector relative to the viewport, or null if not found. */
+/** Bounding box of a selector relative to the top-page viewport, or null if not found. */
 export async function boundingBoxOf(
   driver: ResolvedDriver,
   selector: string,
@@ -43,14 +47,34 @@ export async function boundingBoxOf(
   return await driver.evaluate((sel: string): BoundingBox | null => {
     function resolve(s: string): Element | null {
       if (s == null) return null
+      // `a >> b`: descend into a's shadow root; `a >>> b`: descend into a's
+      // same-origin iframe document.
       if (s.includes('>>')) {
-        const parts = s.split(/\s*>>\s*/).filter(Boolean)
+        const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
         let root: Document | ShadowRoot | Element = document
         let el: Element | null = null
-        for (const part of parts) {
-          el = (root as ParentNode).querySelector(part)
+        let hop = ''
+        for (const t of tokens) {
+          if (t === '>>' || t === '>>>') {
+            hop = t
+            continue
+          }
+          if (el) {
+            if (hop === '>>>') {
+              let doc: Document | null = null
+              try {
+                doc = (el as HTMLIFrameElement).contentDocument
+              } catch {
+                doc = null // cross-origin
+              }
+              if (!doc) return null
+              root = doc
+            } else {
+              root = (el as Element).shadowRoot || (el as Element)
+            }
+          }
+          el = (root as ParentNode).querySelector(t)
           if (!el) return null
-          root = (el as Element).shadowRoot || (el as Element)
         }
         return el
       }
@@ -75,18 +99,34 @@ export async function boundingBoxOf(
       }
       return null
     }
+    // Offset of el's document viewport in top-page coordinates (same-origin frames).
+    function frameOffset(el: Element): { x: number; y: number } {
+      let x = 0
+      let y = 0
+      let win = el.ownerDocument ? el.ownerDocument.defaultView : null
+      while (win && win !== window && win.frameElement) {
+        const fe = win.frameElement as HTMLElement
+        const r = fe.getBoundingClientRect()
+        x += r.x + fe.clientLeft
+        y += r.y + fe.clientTop
+        win = win.parent as Window & typeof globalThis
+      }
+      return { x, y }
+    }
     const el = resolve(sel)
     if (!el) return null
     const r = el.getBoundingClientRect()
     if (r.width === 0 && r.height === 0) return null
-    return { x: r.x, y: r.y, width: r.width, height: r.height }
+    const o = frameOffset(el)
+    return { x: r.x + o.x, y: r.y + o.y, width: r.width, height: r.height }
   }, selector)
 }
 
 /**
  * Scroll offset + max offset for the window (no selector) or a scroll container.
  * Uses `window.scrollY` for page-level scroll because Firefox/Camoufox report
- * `documentElement.scrollTop` as 0.
+ * `documentElement.scrollTop` as 0 — the same applies to iframe document roots,
+ * which read through their own `defaultView`.
  */
 export async function scrollMetricsOf(
   driver: ResolvedDriver,
@@ -95,13 +135,31 @@ export async function scrollMetricsOf(
   return await driver.evaluate((sel: string | null): ScrollMetrics => {
     function resolve(s: string): Element | null {
       if (s.includes('>>')) {
-        const parts = s.split(/\s*>>\s*/).filter(Boolean)
+        const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
         let root: Document | ShadowRoot | Element = document
         let el: Element | null = null
-        for (const part of parts) {
-          el = (root as ParentNode).querySelector(part)
+        let hop = ''
+        for (const t of tokens) {
+          if (t === '>>' || t === '>>>') {
+            hop = t
+            continue
+          }
+          if (el) {
+            if (hop === '>>>') {
+              let doc: Document | null = null
+              try {
+                doc = (el as HTMLIFrameElement).contentDocument
+              } catch {
+                doc = null // cross-origin
+              }
+              if (!doc) return null
+              root = doc
+            } else {
+              root = (el as Element).shadowRoot || (el as Element)
+            }
+          }
+          el = (root as ParentNode).querySelector(t)
           if (!el) return null
-          root = (el as Element).shadowRoot || (el as Element)
         }
         return el
       }
@@ -135,15 +193,21 @@ export async function scrollMetricsOf(
     }
     const el = resolve(sel)
     if (!el) return { offset: -1, maxOffset: -1 }
+    // A document root scrolls through its window (Gecko reports scrollTop 0).
+    if (el.ownerDocument && el === el.ownerDocument.documentElement && el.ownerDocument.defaultView) {
+      const w = el.ownerDocument.defaultView
+      return { offset: w.scrollY, maxOffset: Math.max(0, el.scrollHeight - w.innerHeight) }
+    }
     return { offset: el.scrollTop, maxOffset: Math.max(0, el.scrollHeight - el.clientHeight) }
   }, containerSelector ?? null)
 }
 
 /**
  * Whether the viewport point maps onto the target element (or a descendant),
- * i.e. the target is not occluded by an overlay at that point. Uses a
- * shadow-piercing `elementFromPoint`. Returns true if the target can't be
- * resolved (fail-open), matching the previous behavior.
+ * i.e. the target is not occluded by an overlay at that point. Uses an
+ * `elementFromPoint` that pierces open shadow roots and same-origin iframes.
+ * Returns true if the target can't be resolved (fail-open), matching the
+ * previous behavior.
  */
 export async function pointHitsTarget(
   driver: ResolvedDriver,
@@ -153,16 +217,34 @@ export async function pointHitsTarget(
   return await driver.evaluate(
     (arg: { selector: string; x: number; y: number }): boolean => {
       function resolve(s: string): Element | null {
-        // Playwright shadow-piercing selector (a >> b >> c): descend into each
-        // matched element's shadow root for the next segment.
+        // `a >> b`: descend into a's shadow root; `a >>> b`: descend into a's
+        // same-origin iframe document.
         if (s.includes('>>')) {
-          const parts = s.split(/\s*>>\s*/).filter(Boolean)
+          const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
           let root: Document | ShadowRoot | Element = document
           let el: Element | null = null
-          for (const part of parts) {
-            el = (root as ParentNode).querySelector(part)
+          let hop = ''
+          for (const t of tokens) {
+            if (t === '>>' || t === '>>>') {
+              hop = t
+              continue
+            }
+            if (el) {
+              if (hop === '>>>') {
+                let doc: Document | null = null
+                try {
+                  doc = (el as HTMLIFrameElement).contentDocument
+                } catch {
+                  doc = null // cross-origin
+                }
+                if (!doc) return null
+                root = doc
+              } else {
+                root = (el as Element).shadowRoot || (el as Element)
+              }
+            }
+            el = (root as ParentNode).querySelector(t)
             if (!el) return null
-            root = (el as Element).shadowRoot || (el as Element)
           }
           return el
         }
@@ -188,26 +270,56 @@ export async function pointHitsTarget(
         }
         return null
       }
-      // Deepest element at the point, piercing open shadow roots.
+      // Deepest element at the point, piercing open shadow roots and descending
+      // into same-origin iframes (translating the point into each frame's
+      // viewport coordinates as it goes).
       function deepFromPoint(x: number, y: number): Element | null {
         let root: Document | ShadowRoot = document
         let el = root.elementFromPoint(x, y)
-        while (el && (el as Element).shadowRoot) {
-          const inner = (el as Element).shadowRoot!.elementFromPoint(x, y)
-          if (!inner || inner === el) break
-          root = (el as Element).shadowRoot!
-          el = inner
+        for (;;) {
+          if (!el) return null
+          if ((el as Element).shadowRoot) {
+            const inner = (el as Element).shadowRoot!.elementFromPoint(x, y)
+            if (!inner || inner === el) return el
+            root = (el as Element).shadowRoot!
+            el = inner
+            continue
+          }
+          if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+            let doc: Document | null = null
+            try {
+              doc = (el as HTMLIFrameElement).contentDocument
+            } catch {
+              doc = null
+            }
+            if (!doc) return el
+            const r = el.getBoundingClientRect()
+            x -= r.x + (el as HTMLElement).clientLeft
+            y -= r.y + (el as HTMLElement).clientTop
+            const inner = doc.elementFromPoint(x, y)
+            if (!inner) return el
+            root = doc
+            el = inner
+            continue
+          }
+          return el
         }
-        return el
       }
       function containsDeep(ancestor: Element, node: Element | null): boolean {
         let cur: Node | null = node
         while (cur) {
           if (cur === ancestor) return true
-          const parent: Node | null =
+          let parent: Node | null =
             (cur as Element).assignedSlot ??
             cur.parentNode ??
             ((cur as Node & { host?: Node }).host ?? null)
+          if (!parent && cur.nodeType === 9) {
+            try {
+              parent = (cur as Document).defaultView?.frameElement ?? null
+            } catch {
+              parent = null
+            }
+          }
           cur = parent
         }
         return false
@@ -241,13 +353,31 @@ export async function waitForElement(
       (arg: { selector: string; requireVisible: boolean }): boolean => {
         function resolve(s: string): Element | null {
           if (s.includes('>>')) {
-            const parts = s.split(/\s*>>\s*/).filter(Boolean)
+            const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
             let root: Document | ShadowRoot | Element = document
             let el: Element | null = null
-            for (const part of parts) {
-              el = (root as ParentNode).querySelector(part)
+            let hop = ''
+            for (const t of tokens) {
+              if (t === '>>' || t === '>>>') {
+                hop = t
+                continue
+              }
+              if (el) {
+                if (hop === '>>>') {
+                  let doc: Document | null = null
+                  try {
+                    doc = (el as HTMLIFrameElement).contentDocument
+                  } catch {
+                    doc = null // cross-origin
+                  }
+                  if (!doc) return null
+                  root = doc
+                } else {
+                  root = (el as Element).shadowRoot || (el as Element)
+                }
+              }
+              el = (root as ParentNode).querySelector(t)
               if (!el) return null
-              root = (el as Element).shadowRoot || (el as Element)
             }
             return el
           }

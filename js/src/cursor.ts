@@ -542,16 +542,34 @@ export class Cursor {
         fromY: number
       }) => {
         function resolve(s: string): Element | null {
-          // Playwright shadow-piercing selector (a >> b >> c): descend into each
-          // matched element's shadow root for the next segment.
+          // `a >> b`: descend into a's shadow root; `a >>> b`: descend into a's
+          // same-origin iframe document.
           if (s.includes('>>')) {
-            const parts = s.split(/\s*>>\s*/).filter(Boolean)
+            const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
             let root: Document | ShadowRoot | Element = document
             let el: Element | null = null
-            for (const part of parts) {
-              el = (root as ParentNode).querySelector(part)
+            let hop = ''
+            for (const t of tokens) {
+              if (t === '>>' || t === '>>>') {
+                hop = t
+                continue
+              }
+              if (el) {
+                if (hop === '>>>') {
+                  let doc: Document | null = null
+                  try {
+                    doc = (el as HTMLIFrameElement).contentDocument
+                  } catch {
+                    doc = null // cross-origin
+                  }
+                  if (!doc) return null
+                  root = doc
+                } else {
+                  root = (el as Element).shadowRoot || (el as Element)
+                }
+              }
+              el = (root as ParentNode).querySelector(t)
               if (!el) return null
-              root = (el as Element).shadowRoot || (el as Element)
             }
             return el
           }
@@ -578,14 +596,52 @@ export class Cursor {
         }
         const el = resolve(arg.selector) as HTMLElement | null
         if (!el) return null
+        // Offset of a node's document viewport in top-page coordinates: mouse
+        // input is page-level, so every rect from inside a same-origin iframe
+        // is translated before any band/clip math.
+        const frameOffset = (node: Element): { x: number; y: number } => {
+          let x = 0
+          let y = 0
+          let win = node.ownerDocument ? node.ownerDocument.defaultView : null
+          while (win && win !== window && win.frameElement) {
+            const fe = win.frameElement as HTMLElement
+            const fr = fe.getBoundingClientRect()
+            x += fr.x + fe.clientLeft
+            y += fr.y + fe.clientTop
+            win = win.parent as Window & typeof globalThis
+          }
+          return { x, y }
+        }
+        type Rect = { x: number; y: number; width: number; height: number; top: number; bottom: number; left: number; right: number }
+        const rectOf = (node: Element): Rect => {
+          const r = node.getBoundingClientRect()
+          const o = frameOffset(node)
+          return {
+            x: r.x + o.x, y: r.y + o.y, width: r.width, height: r.height,
+            top: r.top + o.y, bottom: r.bottom + o.y, left: r.left + o.x, right: r.right + o.x,
+          }
+        }
+        const styleOf = (node: Element): CSSStyleDeclaration =>
+          ((node.ownerDocument && node.ownerDocument.defaultView) || window).getComputedStyle(node)
+        // Is this node the root of a scrollable (i.e. window-scrolled) iframe doc?
+        const isFrameDocRoot = (node: Element): boolean =>
+          !!node.ownerDocument &&
+          node === node.ownerDocument.documentElement &&
+          node.ownerDocument.defaultView !== window
+        // Walk up through shadow hosts AND same-origin frame boundaries.
         const stepUp = (node: Element): Element | null => {
           if (node.parentElement) return node.parentElement
-          const r = node.getRootNode() as ShadowRoot
-          return r && r.host ? (r.host as Element) : null
+          const r = node.getRootNode() as ShadowRoot | Document
+          if ((r as ShadowRoot).host) return (r as ShadowRoot).host as Element
+          try {
+            return ((r as Document).defaultView?.frameElement as Element | null) ?? null
+          } catch {
+            return null
+          }
         }
         const vh = window.innerHeight || document.documentElement.clientHeight
         const vw = window.innerWidth || document.documentElement.clientWidth
-        const elRect = el.getBoundingClientRect()
+        const elRect = rectOf(el)
 
         // Every scrollable ancestor, innermost first. A position:fixed ancestor
         // is a hard barrier: neither the page nor anything above it can move the
@@ -597,21 +653,48 @@ export class Cursor {
         let cur = stepUp(el)
         let depth = 0
         while (cur && depth < 60 && cur !== document.documentElement) {
-          const st = getComputedStyle(cur)
+          if (isFrameDocRoot(cur)) {
+            // An iframe's document scrolls through its own window — a page-step
+            // scoped to the frame. Continue past it into the host document.
+            const w = cur.ownerDocument.defaultView!
+            if (cur.scrollHeight > w.innerHeight + 1) chain.push(cur as HTMLElement)
+            cur = stepUp(cur)
+            depth++
+            continue
+          }
+          const st = styleOf(cur)
           const scrollable =
             cur.scrollHeight > cur.clientHeight + 1 &&
             (st.overflowY === 'scroll' || st.overflowY === 'auto')
-          if (cur === document.body) {
-            // body-as-scroller only matters when the page itself doesn't scroll.
-            if (scrollable && !(document.documentElement.scrollHeight > vh + 10)) {
+          if (cur.ownerDocument && cur === cur.ownerDocument.body) {
+            // body-as-scroller only matters when its document doesn't scroll.
+            const docRoot = cur.ownerDocument.documentElement
+            const docVh = cur.ownerDocument.defaultView?.innerHeight ?? vh
+            if (scrollable && !(docRoot.scrollHeight > docVh + 10)) {
               chain.push(cur as HTMLElement)
             }
-            break
+            if (cur === document.body) break
+            cur = stepUp(cur)
+            depth++
+            continue
           }
           if (scrollable) chain.push(cur as HTMLElement)
           if (st.position === 'fixed') {
-            pageCanMoveTarget = false
-            break
+            // Fixed pins to its OWN frame's viewport. Only a top-document fixed
+            // ancestor defeats the page-step — the host page still moves a whole
+            // iframe. Inside a frame, skip to the frame element: nothing above
+            // `cur` in this frame can move the target, but host scrollers can.
+            if (cur.ownerDocument === document) {
+              pageCanMoveTarget = false
+              break
+            }
+            try {
+              cur = (cur.ownerDocument.defaultView?.frameElement as Element | null) ?? null
+            } catch {
+              cur = null
+            }
+            depth++
+            continue
           }
           cur = stepUp(cur)
           depth++
@@ -624,14 +707,48 @@ export class Cursor {
         // occluders count: anything that scrolls WITH the target (open dropdown
         // layers, decorative wrappers) would re-occlude after every scroll and
         // wedge the retry loop into its timeout.
+        // elementFromPoint that descends into same-origin iframes at the point,
+        // translating into each frame's viewport coordinates as it goes.
+        const hitAtPoint = (x: number, y: number): Element | null => {
+          let hit = document.elementFromPoint(x, y)
+          for (;;) {
+            if (!hit || (hit.tagName !== 'IFRAME' && hit.tagName !== 'FRAME')) return hit
+            let inner: Document | null = null
+            try {
+              inner = (hit as HTMLIFrameElement).contentDocument
+            } catch {
+              inner = null // cross-origin
+            }
+            if (!inner) return hit
+            const fr = hit.getBoundingClientRect()
+            x -= fr.x + (hit as HTMLElement).clientLeft
+            y -= fr.y + (hit as HTMLElement).clientTop
+            const next = inner.elementFromPoint(x, y)
+            if (!next) return hit
+            hit = next
+          }
+        }
+        // `contains` across shadow and same-origin frame boundaries.
+        const containsDeep = (ancestor: Element, node: Element | null): boolean => {
+          let n: Element | null = node
+          while (n) {
+            if (n === ancestor) return true
+            n = stepUp(n)
+          }
+          return false
+        }
         const pinnedRectAt = (x: number, y: number): { top: number; bottom: number } | null => {
-          const hit = document.elementFromPoint(x, y)
-          if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return null
+          const hit = hitAtPoint(x, y)
+          if (!hit || hit === el || containsDeep(el, hit) || containsDeep(hit, el)) return null
           let n: Element | null = hit
           while (n && n !== document.body && n !== document.documentElement) {
-            const pos = getComputedStyle(n).position
+            if (isFrameDocRoot(n) || (n.ownerDocument && n === n.ownerDocument.body)) {
+              n = stepUp(n)
+              continue
+            }
+            const pos = styleOf(n).position
             if (pos === 'fixed' || pos === 'sticky') {
-              return n.contains(el) ? null : n.getBoundingClientRect()
+              return containsDeep(n, el) ? null : rectOf(n)
             }
             n = stepUp(n)
           }
@@ -661,6 +778,17 @@ export class Cursor {
           clearBottom = vh - arg.pad
         }
 
+        // Visible band of a chain scroller: for an iframe doc root that's the
+        // frame ELEMENT's box (the content box is taller than the viewport).
+        const scrollerRectOf = (c: Element): Rect => {
+          if (isFrameDocRoot(c)) {
+            try {
+              const fe = c.ownerDocument.defaultView?.frameElement as Element | null
+              if (fe) return rectOf(fe)
+            } catch { /* cross-origin — fall through */ }
+          }
+          return rectOf(c)
+        }
         // Click region: the target's on-screen clip. Element rect ∩ every
         // ancestor scroller's rect ∩ clear band ∩ viewport edges.
         let clipTop = clearTop
@@ -668,7 +796,7 @@ export class Cursor {
         let clipLeft = arg.edge
         let clipRight = vw - arg.edge
         for (const c of chain) {
-          const cr = c.getBoundingClientRect()
+          const cr = scrollerRectOf(c)
           clipTop = Math.max(clipTop, cr.top)
           clipBottom = Math.min(clipBottom, cr.bottom)
           clipLeft = Math.max(clipLeft, cr.left)
@@ -735,13 +863,13 @@ export class Cursor {
           let bLeft = 5
           let bRight = vw - 5
           if (!isPageStep) {
-            const r = node.getBoundingClientRect()
+            const r = scrollerRectOf(node)
             bTop = Math.max(bTop, r.top)
             bBottom = Math.min(bBottom, r.bottom)
             bLeft = Math.max(bLeft, r.left)
             bRight = Math.min(bRight, r.right)
             for (let j = i + 1; j < chain.length; j++) {
-              const outer = chain[j].getBoundingClientRect()
+              const outer = scrollerRectOf(chain[j])
               bTop = Math.max(bTop, outer.top)
               bBottom = Math.min(bBottom, outer.bottom)
               bLeft = Math.max(bLeft, outer.left)
@@ -752,10 +880,15 @@ export class Cursor {
           // A band too small to ever show the target can't help — skip outward.
           if (bH < Math.min(elRect.height, 24) + 6) continue
           const desiredTop = bTop + Math.max(0, bH - elRect.height) * arg.finishPosition
-          const current = isPageStep ? window.scrollY : node.scrollTop
+          // An iframe doc root scrolls through its own window (Gecko reports
+          // scrollTop 0 on document roots).
+          const frameWin = isFrameDocRoot(node) ? node.ownerDocument.defaultView! : null
+          const current = isPageStep ? window.scrollY : frameWin ? frameWin.scrollY : node.scrollTop
           const maxScroll = isPageStep
             ? Math.max(0, document.documentElement.scrollHeight - vh)
-            : Math.max(0, node.scrollHeight - node.clientHeight)
+            : frameWin
+              ? Math.max(0, node.scrollHeight - frameWin.innerHeight)
+              : Math.max(0, node.scrollHeight - node.clientHeight)
           const target = Math.max(0, Math.min(current + (elRect.top - desiredTop), maxScroll))
           const delta = target - current
           if (Math.abs(delta) >= 1) {
@@ -789,7 +922,15 @@ export class Cursor {
         // layouts full of decorative scroll wrappers even though the wheel
         // would have landed fine where it sat.
         const consumesWheel = (n: Element): boolean => {
-          const st = getComputedStyle(n)
+          if (isFrameDocRoot(n)) {
+            // A wheel over a scrollable iframe doc is consumed by the frame's
+            // window until it hits its limit, then bubbles to the host.
+            const w = n.ownerDocument.defaultView!
+            return chosenDelta > 0
+              ? w.scrollY + w.innerHeight < n.scrollHeight - 1
+              : w.scrollY > 1
+          }
+          const st = styleOf(n)
           if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') return false
           if (n.scrollHeight <= n.clientHeight + 1) return false
           return chosenDelta > 0
@@ -797,7 +938,7 @@ export class Cursor {
             : n.scrollTop > 1
         }
         const wheelReaches = (x: number, y: number): boolean => {
-          const hit = document.elementFromPoint(x, y)
+          const hit = hitAtPoint(x, y)
           if (!hit) return chosenIsPage
           let n: Element | null = hit
           while (n && n !== document.documentElement && n !== document.body) {
