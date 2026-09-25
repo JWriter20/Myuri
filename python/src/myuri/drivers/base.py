@@ -11,6 +11,7 @@ callables, or a prebuilt wrapper (e.g. :class:`myuri.drivers.PlaywrightDriver`).
 """
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Optional
 
@@ -43,7 +44,10 @@ class Driver(ABC):
     async def move(self, x: float, y: float) -> None: ...
 
     @abstractmethod
-    async def click(self, button: str = "left") -> None: ...
+    async def click(self, button: str = "left", click_count: int = 1) -> None:
+        """Press-and-release at the current position. ``click_count`` is the
+        click's place in a multi-click (2 and 3 continue a double/triple click,
+        which browsers use to select a word/line)."""
 
     @abstractmethod
     async def down(self, key: str) -> None: ...
@@ -87,6 +91,17 @@ class Driver(ABC):
 AsyncFn = Callable[..., Awaitable[Any]]
 
 
+def _accepts_positional(fn: Callable[..., Any], count: int) -> bool:
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return True
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return sum(p.kind in positional for p in params) >= count
+
+
 class _FunctionDriver(Driver):
     """A Driver assembled from plain callables (see :func:`define_driver`)."""
 
@@ -96,8 +111,13 @@ class _FunctionDriver(Driver):
     async def move(self, x: float, y: float) -> None:
         await self._fns["move"](x, y)
 
-    async def click(self, button: str = "left") -> None:
-        await self._fns["click"](button)
+    async def click(self, button: str = "left", click_count: int = 1) -> None:
+        fn = self._fns["click"]
+        # Older click callables take only ``button``; they get plain clicks.
+        if click_count != 1 and _accepts_positional(fn, 2):
+            await fn(button, click_count)
+        else:
+            await fn(button)
 
     async def down(self, key: str) -> None:
         await self._fns["down"](key)

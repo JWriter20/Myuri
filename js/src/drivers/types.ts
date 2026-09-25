@@ -31,8 +31,12 @@ export interface Driver {
   // ---- input primitives (required) ----
   /** Move the mouse to viewport coordinates (already clamped/rounded by core). */
   move(x: number, y: number): Promise<void>
-  /** Press-and-release the mouse at its current position. */
-  click(button?: MouseButton): Promise<void>
+  /**
+   * Press-and-release the mouse at its current position. `clickCount` is the
+   * click's place in a multi-click (2 and 3 continue a double/triple click,
+   * which browsers use to select a word/line). Defaults to 1.
+   */
+  click(button?: MouseButton, clickCount?: number): Promise<void>
   /** Press a modifier/key down (no release). */
   down(key: string): Promise<void>
   /** Release a previously held key. */

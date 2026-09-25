@@ -61,7 +61,8 @@ const cursor = createCursor({
   driver: defineDriver({
     // required input primitives
     move: (x, y) => myBackend.mouseMove(x, y),
-    click: () => myBackend.mouseClick(),
+    // clickCount 2/3 continue a double/triple click (used to clear fields)
+    click: (button, clickCount) => myBackend.mouseClick(button, clickCount),
     down: (k) => myBackend.keyDown(k),
     up: (k) => myBackend.keyUp(k),
     wheel: (dx, dy) => myBackend.wheel(dx, dy),

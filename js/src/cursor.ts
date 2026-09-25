@@ -39,6 +39,99 @@ const delay = async (ms: number): Promise<void> => {
 const pointInBox = (p: Vector, b: BoundingBox): boolean =>
   p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
 
+interface FocusedField {
+  /** Viewport box in top-page coordinates. */
+  box: BoundingBox
+  empty: boolean
+  /** Whether the field's whole content is selected. */
+  selection: 'all' | 'partial'
+  /** Paragraph count; triple-click selects one paragraph at a time. */
+  lines: number
+  /** Rendered line count (wrapped paragraphs span several). */
+  visualLines: number
+  scrollTop: number
+  /** A point on the first line of text (near its start), in top-page coordinates. */
+  firstLine: Vector
+}
+
+/**
+ * Page function for clearExisting: the focused field, found by following focus
+ * through open shadow roots and same-origin iframes. Null when no field has
+ * focus (or it sits in a cross-origin frame). Tag names, not instanceof, since
+ * elements in an iframe belong to that frame's realm.
+ */
+const focusedField = (): FocusedField | null => {
+  let el = document.activeElement as HTMLElement | null
+  let ox = 0
+  let oy = 0
+  for (;;) {
+    if (!el) return null
+    if (el.shadowRoot?.activeElement) {
+      el = el.shadowRoot.activeElement as HTMLElement
+    } else if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      let doc: Document | null = null
+      try {
+        doc = (el as HTMLIFrameElement).contentDocument
+      } catch {
+        doc = null
+      }
+      if (!doc) return null
+      const fr = el.getBoundingClientRect()
+      ox += fr.x + el.clientLeft
+      oy += fr.y + el.clientTop
+      el = doc.activeElement as HTMLElement | null
+    } else {
+      break
+    }
+  }
+  const doc = el.ownerDocument
+  // A frame's body only counts when it is itself the editor (designMode or
+  // contenteditable), as rich-text editors built on iframes do.
+  if (el === doc.body && !el.isContentEditable) return null
+  const r = el.getBoundingClientRect()
+  const cs = (doc.defaultView ?? window).getComputedStyle(el)
+  const isTextControl = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
+  const control = el as HTMLInputElement
+  const text = isTextControl ? control.value : el.innerText.replace(/\n+$/, '')
+  const lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2
+  let firstLine = {
+    x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + 6,
+    y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop + lineHeight / 2,
+  }
+  let selection: 'all' | 'partial'
+  if (isTextControl) {
+    // email/number inputs expose no selection range; they are single-line,
+    // which triple-click always selects whole.
+    selection =
+      control.selectionStart == null || (control.selectionStart === 0 && control.selectionEnd === text.length)
+        ? 'all'
+        : 'partial'
+  } else {
+    selection = String(doc.getSelection()).trim() === el.innerText.trim() ? 'all' : 'partial'
+    // Rich content: aim at the first visible character instead.
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = (n.textContent ?? '').search(/\S/)
+      if (i < 0) continue
+      const range = doc.createRange()
+      range.setStart(n, i)
+      range.setEnd(n, i + 1)
+      const c = range.getBoundingClientRect()
+      firstLine = { x: c.left + c.width / 2 + 4, y: c.top + c.height / 2 }
+      break
+    }
+  }
+  return {
+    box: { x: r.x + ox, y: r.y + oy, width: r.width, height: r.height },
+    empty: text.trim() === '',
+    selection,
+    lines: text === '' ? 1 : text.split('\n').length,
+    visualLines: Math.ceil(el.scrollHeight / lineHeight),
+    scrollTop: el.scrollTop,
+    firstLine: { x: firstLine.x + ox, y: firstLine.y + oy },
+  }
+}
+
 /** One pass of the container-aware scroll planner (see computeScrollPlan). */
 interface ScrollPlan {
   /** Target's click region is on-screen, inside the clear band, and unoccluded. */
@@ -70,6 +163,14 @@ export interface CursorOptions {
   dimensions?: { width: number; height: number }
   /** Begin idle random movements immediately. */
   performRandomMovesInitially?: boolean
+  /**
+   * Clear fields with a keyboard select-all (this modifier + A) instead of the
+   * default triple-click. Off by default because the modifier reveals the real
+   * OS: pages can read `ctrlKey`/`metaKey`, and browsers only honor the one for
+   * the OS they actually run on (Cmd on macOS, Ctrl elsewhere), whatever
+   * `navigator.platform` claims. Use it for editors where triple-click fails.
+   */
+  selectAllModifier?: 'Control' | 'Meta'
   /** Default per-action options. */
   defaults?: {
     move?: MoveOptions
@@ -88,6 +189,7 @@ export class Cursor {
   private readonly seed: number
   private readonly settings: MyuriSettings
   private readonly defaults: NonNullable<CursorOptions['defaults']>
+  private readonly selectAllModifier: 'Control' | 'Meta' | undefined
   private typer: HumanTyper
 
   private previous: Vector
@@ -112,6 +214,7 @@ export class Cursor {
           ? generateProfile(this.seed)
           : resolveSettings()
     this.defaults = options.defaults ?? {}
+    this.selectAllModifier = options.selectAllModifier
     this.previous = options.start ?? getBetterStartingPosition(options.dimensions, this.rng)
 
     const typerInput: TyperInput = {
@@ -435,12 +538,57 @@ export class Cursor {
 
   // ---- typing -------------------------------------------------------------
 
-  private async platformSelectAllModifier(): Promise<string> {
-    const isMac = await this.driver.evaluate(
-      () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent),
-      null,
-    )
-    return isMac ? 'Meta' : 'Control'
+  /**
+   * Empty the focused field. By default this never sends a modifier key:
+   * triple-click selects a single-line field outright, and multi-line content
+   * is then extended to the end with Shift+ArrowDown (the same keys on every
+   * OS). `focusClicked` means the click that focused the field just happened
+   * at the cursor, so it counts as click 1 of the triple.
+   */
+  private async clearFocusedField(focusClicked: boolean): Promise<void> {
+    let field = await this.driver.evaluate(focusedField, null)
+    if (!field) throw new Error('myuri: clearExisting needs a focused field (pass a selector)')
+    if (field.empty) return
+    if (this.selectAllModifier) {
+      await this.typer.deleteAll({ count: 0, selectAllModifier: this.selectAllModifier })
+    } else {
+      if (!pointInBox(this.previous, field.box)) {
+        await this.moveAlong(getRandomBoxPoint(field.box, {}, this.previous, [], this.rng), {}, false)
+        focusClicked = false
+      }
+      let firstClick = focusClicked ? 2 : 1
+      if (field.lines > 1) {
+        // Triple-click selects one paragraph, so start on the first one: wheel
+        // the field back to its top if needed, then triple-click there.
+        for (let i = 0; i < 30 && field.scrollTop > 0; i++) {
+          await this.driver.wheel(0, -Math.min(field.scrollTop, 80 + this.rng() * 80))
+          await delay(30 + this.rng() * 40)
+          field = (await this.driver.evaluate(focusedField, null)) ?? field
+        }
+        const { x, y } = field.firstLine
+        await this.moveAlong({ x: x + this.rng() * 12, y: y + (this.rng() - 0.5) * 3 }, {}, false)
+        firstClick = 1
+      }
+      for (let clickCount = firstClick; clickCount <= 3; clickCount++) {
+        if (clickCount > 1) await delay(70 + this.rng() * 90)
+        await this.driver.click('left', clickCount)
+      }
+      if (field.lines > 1) {
+        await delay(120 + this.rng() * 120)
+        await this.driver.down('Shift')
+        const maxPresses = Math.max(field.lines, field.visualLines) + 2
+        for (let i = 0; i < maxPresses && (await this.driver.evaluate(focusedField, null))?.selection === 'partial'; i++) {
+          await this.driver.press('ArrowDown')
+          await delay(40 + this.rng() * 60)
+        }
+        await this.driver.up('Shift')
+      }
+      await delay(60 + this.rng() * 90)
+      await this.typer.deleteAll({ count: 1 })
+    }
+    if (!(await this.driver.evaluate(focusedField, null))?.empty) {
+      throw new Error('myuri: clearExisting could not empty the focused field')
+    }
   }
 
   /** Type text, optionally clicking a field first. */
@@ -452,7 +600,7 @@ export class Cursor {
         await this.click(selector, { waitForClick: 30, waitForSelector: opts.waitForSelector, maxTries: opts.maxTries })
       }
       if (opts.clearExisting) {
-        await this.typer.deleteAll({ count: 0, selectAllModifier: await this.platformSelectAllModifier() })
+        await this.clearFocusedField(selector != null)
       }
       await this.typer.type(text)
     } finally {

@@ -36,7 +36,7 @@ import { createCursor, defineDriver } from '@jobharvest/myuri'
 const cursor = createCursor({
   driver: defineDriver({
     move: (x, y) => backend.move(x, y),
-    click: () => backend.click(),
+    click: (button, clickCount) => backend.click(button, clickCount),
     wheel: (dx, dy) => backend.wheel(dx, dy),
     down: (k) => backend.keyDown(k),
     up: (k) => backend.keyUp(k),

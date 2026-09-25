@@ -6,21 +6,24 @@ wait / point-hit / scroll) and returning canned geometry for a single element.
 """
 import pytest
 
-from myuri import Cursor
+from myuri import Cursor, TypeOptions
 from myuri.drivers.base import Driver
 
 RECT = {"x": 100, "y": 100, "width": 200, "height": 50}
 
 
 class FakeDriver(Driver):
-    def __init__(self):
+    def __init__(self, field_text=""):
         self.calls = []
+        # Text of the focused field (RECT); Backspace empties it, as it would
+        # once triple-click has selected everything.
+        self.field_text = field_text
 
     async def move(self, x, y):
         self.calls.append(("move", x, y))
 
-    async def click(self, button="left"):
-        self.calls.append(("click", button))
+    async def click(self, button="left", click_count=1):
+        self.calls.append(("click", button, click_count))
 
     async def down(self, key):
         self.calls.append(("down", key))
@@ -33,8 +36,20 @@ class FakeDriver(Driver):
 
     async def press(self, key, delay=None):
         self.calls.append(("press", key))
+        if key == "Backspace":
+            self.field_text = ""
 
     async def evaluate(self, js, arg=None):
+        if "visualLines" in js:  # focused field (clear_existing)
+            return {
+                "box": dict(RECT),
+                "empty": self.field_text == "",
+                "selection": "all",
+                "lines": 1,
+                "visualLines": 1,
+                "scrollTop": 0,
+                "firstLine": {"x": RECT["x"] + 8, "y": RECT["y"] + 25},
+            }
         if "wheelReaches" in js:  # scroll plan: element visible, nothing to scroll
             return {
                 "inView": True,
@@ -56,8 +71,6 @@ class FakeDriver(Driver):
             return {"offset": 0, "maxOffset": 2000}
         if "getBoundingClientRect" in js:
             return dict(RECT)
-        if "navigator.platform" in js:
-            return False
         return None
 
     def is_closed(self):
@@ -92,6 +105,36 @@ async def test_type_clicks_then_presses():
     await cursor.type("hi", "#target")
     pressed = [c[1] for c in d.calls if c[0] == "press"]
     assert "h" in pressed and "i" in pressed
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_triple_clicks_without_modifier_keys():
+    d = FakeDriver(field_text="Glassdoor")
+    cursor = Cursor(d, seed=5, settings={"typing": {"mistake_multiplier": 0}})
+    await cursor.type("hi", "#target", TypeOptions(clear_existing=True))
+    # The focusing click is click 1; clicks 2 and 3 complete the triple-click.
+    assert [c[2] for c in d.calls if c[0] == "click"] == [1, 2, 3]
+    assert not [c for c in d.calls if c[0] == "down" and c[1] in ("Control", "Meta")]
+    assert ("press", "Backspace") in d.calls
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_skips_an_empty_field():
+    d = FakeDriver(field_text="")
+    cursor = Cursor(d, seed=5, settings={"typing": {"mistake_multiplier": 0}})
+    await cursor.type("hi", "#target", TypeOptions(clear_existing=True))
+    assert [c[2] for c in d.calls if c[0] == "click"] == [1]
+
+
+@pytest.mark.asyncio
+async def test_clear_existing_uses_select_all_modifier_only_when_set():
+    d = FakeDriver(field_text="Glassdoor")
+    cursor = Cursor(
+        d, seed=5, settings={"typing": {"mistake_multiplier": 0}}, select_all_modifier="Meta"
+    )
+    await cursor.type("hi", "#target", TypeOptions(clear_existing=True))
+    assert ("down", "Meta") in d.calls
+    assert [c[2] for c in d.calls if c[0] == "click"] == [1]
 
 
 @pytest.mark.asyncio
