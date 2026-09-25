@@ -2,17 +2,33 @@
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
 
-`myuri` generates realistic mouse trajectories (from recorded human motion), fitted
-scroll dynamics, and Markov-model typing with natural errors and corrections. It does
+`myuri` moves the mouse along recorded human trajectories (via
+[cursory](https://github.com/Vinyzu/cursory)), scrolls with fitted wheel dynamics, and
+types with a Markov model that makes natural errors and corrections. It does
 **not** talk to a browser itself. You inject a small **Driver** — the functions that
 actually move the mouse, press keys, scroll, and read the DOM — so myuri works with
 Playwright, Puppeteer, raw CDP, or anything you can wrap.
 
 Available for **TypeScript/JavaScript** (`js/`) and **Python** (`python/`) with a mirrored API.
 
+## See it move
+
+Each dot in the trail is one real `mousemove` event that myuri sent, so dots bunch up
+where the hand slows down. The overlay reads the browser's own events; nothing is drawn
+from the planned path.
+
+| Mouse movement | Typing | Scrolling |
+|:---:|:---:|:---:|
+| <img src="docs/media/mouse.gif" width="300" alt="Cursor moving between buttons along curved, human-paced paths and clicking each"> | <img src="docs/media/typing.gif" width="300" alt="Two form fields filled with an uneven typing rhythm, including a typo that is backspaced and corrected"> | <img src="docs/media/scroll.gif" width="300" alt="A long page scrolled in wheel bursts down to a target button, which is clicked, then scrolled back up"> |
+| Recorded human paths, overshoot and correction | Markov rhythm, typos, backspace fixes | Wheel bursts with momentum, then a click |
+
+The GIFs come from [`js/scripts/record-demos.mjs`](js/scripts/record-demos.mjs)
+(`npm run build && node scripts/record-demos.mjs` in `js/`), with seed `20260925`.
+
 ```
 ┌──────────────────────────────┐
-│  myuri core (pure, portable) │  trajectories · scroll model · Markov typing · seeded RNG
+│  myuri core (pure, portable) │  scroll model · Markov typing · seeded RNG
+│  + cursory / cursory-js      │  recorded human mouse trajectories
 └──────────────┬───────────────┘
                │ Driver interface
    ┌───────────┼───────────┬─────────────┐
@@ -143,8 +159,41 @@ wins over the derived profile.
 |------|------|
 | `js/` | npm package `@jobharvest/myuri` (private) |
 | `python/` | Python package `myuri` (private; git-installed) |
-| `assets/trajectories.json.gz` | shared recorded-motion dataset (single source of truth) |
+| `docs/media/` | demo GIFs used in this README |
+
+## Mouse trajectories: cursory
+
+myuri doesn't generate mouse paths itself. It uses **[cursory](https://github.com/Vinyzu/cursory)**
+by [Vinyzu](https://github.com/Vinyzu/). cursory finds the closest match to each movement in a
+database of recorded human trajectories, then morphs, jitters, and resamples it onto the
+requested endpoints.
+
+| Package | Uses |
+|---|---|
+| `@jobharvest/myuri` (TypeScript) | [`cursory-js`](https://github.com/JWriter20/cursory-js), a TypeScript port of cursory |
+| `myuri` (Python) | [`cursory`](https://pypi.org/project/cursory/), the original |
+
+cursory-js reproduces cursory's numpy random stream bit for bit. myuri gives both libraries
+a seed drawn from its own seeded stream, so a given myuri `seed` produces the same mouse path
+in TypeScript and Python (to within about 1e-12 px of floating-point rounding).
+
+## Thanks to
+
+- [Vinyzu](https://github.com/Vinyzu/), for [cursory](https://github.com/Vinyzu/cursory), which
+  every mouse movement in myuri comes from.
+- [Pointergeist](https://github.com/Pointergeist), for helping Vinyzu understand mouse
+  trajectories better.
+- [Margit Antal, Norbert Fejer and Krisztian Buza](https://github.com/margitantal68), for
+  [SapiMouse](https://ieeexplore.ieee.org/document/9465583), and
+  [MIMIC-LOGICS](https://github.com/MIMIC-LOGICS/), for
+  [Mouse-Synthesizer](https://github.com/MIMIC-LOGICS/Mouse-Synthesizer): the recordings
+  behind cursory's trajectory database.
 
 ## License
 
-MIT
+[GNU LGPL v3 or later](LICENSE) © Jake Writer. You can use myuri in commercial and
+closed-source projects. If you distribute a modified myuri, its source has to stay
+available under the same license.
+
+cursory is © Vinyzu, dual-licensed under LGPLv3-or-later and GPLv3-or-later; cursory-js is
+LGPLv3-or-later. myuri depends on them and doesn't redistribute them. See [`NOTICE`](NOTICE).

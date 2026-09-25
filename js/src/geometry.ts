@@ -1,7 +1,7 @@
 import { type Vector, type BoundingBox, type TimedVector, type ViewportSize, direction, magnitude } from './math.js'
 import { type Rng, gaussian } from './rng.js'
 import { type BoxOptions, type PathOptions } from './options.js'
-import { generateTrajectory } from './motion/cursory.js'
+import { generateTrajectory } from 'cursory-js'
 
 /** Keep the cursor at least this many px from the viewport edges. */
 export const VIEWPORT_PADDING = 10
@@ -161,7 +161,14 @@ export function path(start: Vector, end: BoundingBox | Vector, options: PathOpti
       : end
 
   const distance = Math.hypot(endPoint.x - start.x, endPoint.y - start.y)
-  const { points, timings } = generateTrajectory({ x: start.x, y: start.y }, endPoint, 60, 1, rng)
+  // cursory draws from its own numpy-compatible generator, so hand it a seed
+  // pulled from our stream: same myuri seed -> same trajectory, in JS and Python.
+  const { points: raw, timings } = generateTrajectory([start.x, start.y], [endPoint.x, endPoint.y], {
+    frequency: 60,
+    frequencyRandomizer: 1,
+    seed: Math.floor(rng() * 0x100000000),
+  })
+  const points = raw.map(([x, y]) => ({ x, y }))
 
   let speedFactor = opts.moveSpeed !== undefined && opts.moveSpeed > 0 ? 1 / opts.moveSpeed : 1
   if (distance < 100) {

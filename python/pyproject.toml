@@ -7,16 +7,16 @@ name = "myuri"
 version = "2.3.1"
 description = "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, or custom)."
 readme = "README.md"
-license = { text = "MIT" }
+license = "LGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Jake Writer" }]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 keywords = ["playwright", "cdp", "automation", "human-like", "mouse", "cursor", "typing", "scroll", "anti-detection"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = ["cursory>=2.0.0,<3"]
 
 [project.optional-dependencies]
 playwright = ["playwright>=1.40"]
@@ -28,9 +28,6 @@ Issues = "https://github.com/JWriter20/Myuri/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/myuri"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"../assets/trajectories.json.gz" = "myuri/assets/trajectories.json.gz"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

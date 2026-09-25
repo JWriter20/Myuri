@@ -2,7 +2,7 @@
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
 
-`myuri` generates realistic mouse trajectories (from recorded human motion), fitted
+`myuri` generates realistic mouse trajectories (recorded human motion via cursory), fitted
 scroll dynamics, and Markov-model typing with natural errors and corrections. It does
 not talk to a browser itself — you inject a small **Driver**, so it works with
 Playwright, Puppeteer, raw CDP, or anything you can wrap.
@@ -72,4 +72,7 @@ package**. Pass `{ seed }` to reproduce motion, scrolls, and typing rhythm; read
 with `cursor.getSeed()`.
 
 Part of the [Myuri](https://github.com/JWriter20/Myuri) project (TypeScript + Python).
-MIT licensed.
+Mouse trajectories come from [cursory-js](https://github.com/JWriter20/cursory-js), a TypeScript port of
+[cursory](https://github.com/Vinyzu/cursory) by [Vinyzu](https://github.com/Vinyzu/).
+
+Licensed under the [GNU LGPL v3 or later](https://github.com/JWriter20/Myuri/blob/main/LICENSE). See [`NOTICE`](https://github.com/JWriter20/Myuri/blob/main/NOTICE) for credits.

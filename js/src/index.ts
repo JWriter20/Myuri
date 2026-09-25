@@ -54,7 +54,5 @@ export type {
   RandomMoveOptions,
 } from './options.js'
 
-// Typing engine (advanced/standalone use) + trajectory-data injection for
-// non-Node runtimes that can't read the bundled asset from disk.
+// Typing engine (advanced/standalone use).
 export { HumanTyper, type TyperInput, type HumanTyperOptions } from './typing/typer.js'
-export { setTrajectoryData, type TrajectoryData } from './motion/trajectory.js'
