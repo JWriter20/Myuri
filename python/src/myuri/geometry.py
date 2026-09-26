@@ -6,7 +6,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Union
 
-from .motion.cursory import generate_trajectory
+from cursory import generate_trajectory
+
 from .options import BoxOptions, PathOptions
 from .rng import Rng, gaussian
 from .types import BoundingBox, TimedVector, Vector, ViewportSize, direction, magnitude
@@ -218,7 +219,16 @@ def path(
         end_point = end
 
     distance = math.hypot(end_point.x - start.x, end_point.y - start.y)
-    points, timings = generate_trajectory(Vector(start.x, start.y), end_point, 60, 1, rng)
+    # cursory draws from its own numpy generator, so hand it a seed pulled from our
+    # stream: same myuri seed -> same trajectory, in Python and JS (cursory-js).
+    raw, timings = generate_trajectory(
+        (start.x, start.y),
+        (end_point.x, end_point.y),
+        frequency=60,
+        frequency_randomizer=1,
+        seed=math.floor(rng() * 0x100000000),
+    )
+    points = [Vector(x, y) for x, y in raw]
 
     speed_factor = (
         1 / opts.move_speed if opts.move_speed is not None and opts.move_speed > 0 else 1.0

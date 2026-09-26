@@ -1,0 +1,26 @@
+myuri
+=====
+
+Human-like browser cursor, keyboard, and scroll simulation.
+© Jake Writer, licensed under the GNU Lesser General Public License v3.0 or
+later (see LICENSE).
+
+Mouse trajectories
+------------------
+
+myuri does not generate mouse paths itself. It depends on, and does not
+redistribute, the following packages:
+
+  - cursory (Python), https://github.com/Vinyzu/cursory
+    © Vinyzu. Dual-licensed under LGPLv3-or-later and GPLv3-or-later.
+
+  - cursory-js (TypeScript), https://github.com/JWriter20/cursory-js
+    A port of cursory. © Jake Writer, LGPLv3-or-later.
+
+Both ship cursory's recorded-trajectory database, whose recordings the
+original author credits to:
+
+  - Margit Antal, Norbert Fejer and Krisztian Buza, for SapiMouse
+    (https://ieeexplore.ieee.org/document/9465583)
+  - MIMIC-LOGICS, for Mouse-Synthesizer
+    (https://github.com/MIMIC-LOGICS/Mouse-Synthesizer)

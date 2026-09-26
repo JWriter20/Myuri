@@ -15,7 +15,6 @@ from .drivers import (
     from_playwright,
 )
 from .geometry import get_better_starting_position, get_random_box_point, path
-from .motion.trajectory import set_trajectory_data
 from .options import (
     ClickOptions,
     MoveOptions,
@@ -56,7 +55,6 @@ __all__ = [
     "default_settings",
     "resolve_settings",
     "profile_from_seed",
-    "set_trajectory_data",
     "path",
     "get_random_box_point",
     "get_better_starting_position",
