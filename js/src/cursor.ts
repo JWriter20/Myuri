@@ -1146,19 +1146,44 @@ export class Cursor {
     const events = scrollModel.generateScrollPath(wantedDistance, this.rng, undefined, speedIrregularity)
     const sf = opts.speedFactor ?? 1
 
+    // Emit the gesture on the model's clock, like an input device: never wait
+    // for the page to acknowledge an event before sending the next. A browser
+    // acknowledges a wheel event only on its next frame (~16.7 ms at 60 Hz),
+    // so awaiting each one stretched gestures planned at ~8 ms cadence to
+    // 1.25-1.6x their intended duration. Events queued in the browser meanwhile
+    // are handled natively (Chromium coalesces them; Firefox delivers each), as
+    // they would be from real hardware. Every driver sends over a single
+    // connection, so they arrive in order.
+    const sent: Promise<void>[] = []
+    const failure: { error?: unknown } = {}
+    const send = (deltaY: number): void => {
+      const wheel = this.driver.wheel(0, deltaY)
+      sent.push(wheel)
+      wheel.catch((error: unknown) => {
+        if (!('error' in failure)) failure.error = error
+      })
+    }
+
     // Batch sub-threshold deltas: Chromium ignores very small wheel deltas.
     let accumulator = 0
+    const start = Date.now()
+    let due = 0
     for (const ev of events) {
+      if ('error' in failure) break // e.g. the page closed mid-gesture
       accumulator += ev.deltaY
-      const t0 = Date.now()
       if (Math.abs(accumulator) >= 8) {
         const dispatch = Math.trunc(accumulator)
         accumulator -= dispatch
-        await this.driver.wheel(0, dispatch)
+        send(dispatch)
       }
-      await delay(ev.deltaTime / sf - (Date.now() - t0))
+      // An absolute schedule, so timer overshoot doesn't accumulate.
+      due += ev.deltaTime / sf
+      await delay(start + due - Date.now())
     }
-    if (Math.abs(Math.round(accumulator)) >= 1) await this.driver.wheel(0, Math.round(accumulator))
+    if (!('error' in failure) && Math.abs(Math.round(accumulator)) >= 1) send(Math.round(accumulator))
+    // Everything must have landed (or failed) before measuring where the
+    // scroll ended.
+    await Promise.all(sent)
 
     if (pre != null) {
       const post = await this.settleScroll(pre)
