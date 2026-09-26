@@ -4,9 +4,13 @@ Python can't run the JS page-functions locally, so the fake driver answers
 ``evaluate`` by recognizing each payload (scroll-plan / viewport / bounding-box /
 wait / point-hit / scroll) and returning canned geometry for a single element.
 """
+import asyncio
+import time
+
 import pytest
 
-from myuri import Cursor, TypeOptions
+from myuri import Cursor, ScrollOptions, TypeOptions
+from myuri import cursor as cursor_module
 from myuri.drivers.base import Driver
 
 RECT = {"x": 100, "y": 100, "width": 200, "height": 50}
@@ -135,6 +139,86 @@ async def test_clear_existing_uses_select_all_modifier_only_when_set():
     await cursor.type("hi", "#target", TypeOptions(clear_existing=True))
     assert ("down", "Meta") in d.calls
     assert [c[2] for c in d.calls if c[0] == "click"] == [1]
+
+
+class SlowWheelDriver(FakeDriver):
+    """A page 1500px above the target, whose wheel acks arrive a frame later."""
+
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def evaluate(self, js, arg=None):
+        if "wheelReaches" in js:  # scroll plan: page must scroll down 1500px
+            return {
+                "inView": False,
+                "deltaY": 1500,
+                "hoverX": 400,
+                "hoverY": 300,
+                "isPage": True,
+                "region": dict(RECT),
+            }
+        return await super().evaluate(js, arg)
+
+    async def wheel(self, delta_x, delta_y):
+        self.sent.append((time.monotonic() * 1000, delta_y))
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await asyncio.sleep(0.017)
+        self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_scroll_keeps_model_timing_when_wheel_acks_take_a_frame(monkeypatch):
+    # A real browser acknowledges a wheel event only on its next frame. Awaiting
+    # each one used to stretch gestures planned at ~8 ms cadence to 1.5-2x.
+    gestures = []
+    generate = cursor_module.scroll_model.generate_scroll_path
+
+    def record(*args, **kwargs):
+        events = generate(*args, **kwargs)
+        gestures.append(events)
+        return events
+
+    monkeypatch.setattr(cursor_module.scroll_model, "generate_scroll_path", record)
+    d = SlowWheelDriver()
+    cursor = Cursor(d, seed=8, settings={"scroll": {"speed_factor": 1}})
+    await cursor.scroll("#target", ScrollOptions(max_tries=1))
+
+    planned = gestures[0]
+    intended = sum(e.delta_time for e in planned)
+    span = d.sent[-1][0] - d.sent[0][0]
+    assert intended * 0.7 < span < intended * 1.3
+    # Sends overlap rather than waiting on each ack, and lose no distance.
+    assert d.max_in_flight > 1
+    assert abs(sum(dy for _, dy in d.sent) - sum(e.delta_y for e in planned)) <= 1
+
+
+@pytest.mark.asyncio
+async def test_scroll_uses_the_profile_speed_factor(monkeypatch):
+    # scroll() without options must pace by the seed's profile, like JS does
+    # (it used to fall back to 1, ignoring the profile).
+    gestures = []
+    generate = cursor_module.scroll_model.generate_scroll_path
+
+    def record(*args, **kwargs):
+        events = generate(*args, **kwargs)
+        gestures.append(events)
+        return events
+
+    monkeypatch.setattr(cursor_module.scroll_model, "generate_scroll_path", record)
+    d = SlowWheelDriver()
+    cursor = Cursor(d, seed=3)  # profile speed_factor ~0.81
+    speed_factor = cursor.get_settings().scroll.speed_factor
+    assert abs(speed_factor - 1) > 0.1
+    await cursor.scroll("#target", ScrollOptions(max_tries=1))
+
+    intended = sum(e.delta_time for e in gestures[0]) / speed_factor
+    span = d.sent[-1][0] - d.sent[0][0]
+    # Tight enough to tell the profile's pace (~1.24x the raw model) from 1x.
+    assert intended * 0.9 < span < intended * 1.3
 
 
 @pytest.mark.asyncio

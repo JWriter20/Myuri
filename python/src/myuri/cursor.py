@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import replace
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
@@ -729,19 +729,45 @@ class Cursor:
         if speed_irregularity is None:
             speed_irregularity = self._settings.scroll.realism.speed_irregularity
         events = scroll_model.generate_scroll_path(wanted, self._rng, None, speed_irregularity)
-        sf = _pick(options, "speed_factor", 1)
+        sf = _pick(options, "speed_factor", self._settings.scroll.speed_factor)
 
+        # Emit the gesture on the model's clock, like an input device: never wait
+        # for the page to acknowledge an event before sending the next. A browser
+        # acknowledges a wheel event only on its next frame (~16.7 ms at 60 Hz),
+        # so awaiting each one stretched gestures planned at ~8 ms cadence to
+        # 1.25-1.6x their intended duration. Events queued in the browser
+        # meanwhile are handled natively (Chromium coalesces them; Firefox
+        # delivers each), as they would be from real hardware. Tasks start in
+        # creation order and every driver sends over a single connection, so
+        # they arrive in order.
+        sent: List[asyncio.Future] = []
+
+        def failed() -> bool:  # e.g. the page closed mid-gesture
+            return any(s.done() and not s.cancelled() and s.exception() for s in sent)
+
+        # Batch sub-threshold deltas: Chromium ignores very small wheel deltas.
         accumulator = 0.0
+        start = time.monotonic() * 1000.0
+        due = 0.0
         for ev in events:
+            if failed():
+                break
             accumulator += ev.delta_y
-            t0 = time.monotonic()
             if abs(accumulator) >= 8:
                 dispatch = int(accumulator)
                 accumulator -= dispatch
-                await self._driver.wheel(0, dispatch)
-            await _delay(ev.delta_time / sf - (time.monotonic() - t0) * 1000.0)
-        if abs(round(accumulator)) >= 1:
-            await self._driver.wheel(0, round(accumulator))
+                sent.append(asyncio.ensure_future(self._driver.wheel(0, dispatch)))
+            # An absolute schedule, so timer overshoot doesn't accumulate.
+            due += ev.delta_time / sf
+            await _delay(start + due - time.monotonic() * 1000.0)
+        if not failed() and abs(round(accumulator)) >= 1:
+            sent.append(asyncio.ensure_future(self._driver.wheel(0, round(accumulator))))
+        # Everything must have landed (or failed) before measuring where the
+        # scroll ended; re-raise the first failure, having retrieved them all.
+        results = await asyncio.gather(*sent, return_exceptions=True)
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if errors:
+            raise errors[0]
 
         if pre is not None:
             post = await self._settle_scroll(pre)

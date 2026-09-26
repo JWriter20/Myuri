@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createCursor } from '../src/index.js'
 import { type Driver, type PageFunction } from '../src/drivers/types.js'
+import { scrollModel, type ScrollEvent } from '../src/motion/scroll-model.js'
 
 /**
  * A headless driver that runs page-functions against a minimal DOM stub, so the
@@ -202,6 +203,49 @@ describe('Cursor (headless integration)', () => {
     await cursor.type('hi', '#target', { clearExisting: true })
     expect(calls.some((c) => c.op === 'down' && c.args[0] === 'Meta')).toBe(true)
     expect(clickCounts(calls)).toEqual([1])
+  })
+
+  it('scroll keeps the model timing when the browser acks each wheel a frame later', async () => {
+    // A real browser acknowledges a wheel event only on its next frame. Awaiting
+    // each one used to stretch gestures planned at ~8 ms cadence to 1.5-2x.
+    const fake = makeFakeDriver({ x: 100, y: 1500, width: 200, height: 50 })
+    const gestures: ScrollEvent[][] = []
+    const generate = scrollModel.generateScrollPath
+    scrollModel.generateScrollPath = (...args) => {
+      const events = generate.apply(scrollModel, args)
+      gestures.push(events)
+      return events
+    }
+    const sent: Array<{ t: number; deltaY: number; gesture: number }> = []
+    let inFlight = 0
+    let maxInFlight = 0
+    const driver: Driver = {
+      ...fake.driver,
+      async wheel(deltaX, deltaY) {
+        sent.push({ t: performance.now(), deltaY, gesture: gestures.length - 1 })
+        maxInFlight = Math.max(maxInFlight, ++inFlight)
+        await new Promise((r) => setTimeout(r, 17))
+        inFlight--
+      },
+    }
+    try {
+      const cursor = createCursor({ driver, seed: 8, settings: { scroll: { speedFactor: 1 } } })
+      await cursor.scroll('#target', { maxTries: 1 })
+    } finally {
+      scrollModel.generateScrollPath = generate
+    }
+
+    const planned = gestures[0]
+    const intended = planned.reduce((sum, e) => sum + e.deltaTime, 0)
+    const first = sent.filter((w) => w.gesture === 0)
+    const span = first.at(-1)!.t - first[0].t
+    expect(span).toBeLessThan(intended * 1.3)
+    expect(span).toBeGreaterThan(intended * 0.7)
+    // Sends overlap rather than waiting on each ack, and lose no distance.
+    expect(maxInFlight).toBeGreaterThan(1)
+    const plannedDistance = planned.reduce((sum, e) => sum + e.deltaY, 0)
+    const sentDistance = first.reduce((sum, w) => sum + w.deltaY, 0)
+    expect(Math.abs(sentDistance - plannedDistance)).toBeLessThanOrEqual(1)
   })
 
   it('is deterministic: same seed -> same landing point', async () => {
