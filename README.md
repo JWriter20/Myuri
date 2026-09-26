@@ -14,16 +14,27 @@ Available for **TypeScript/JavaScript** (`js/`) and **Python** (`python/`) with 
 ## See it move
 
 Each dot in the trail is one real `mousemove` event that myuri sent, so dots bunch up
-where the hand slows down. The overlay reads the browser's own events; nothing is drawn
+where the hand slows down. The overlays read the browser's own events; nothing is drawn
 from the planned path.
 
-| Mouse movement | Typing | Scrolling |
-|:---:|:---:|:---:|
-| <img src="docs/media/mouse.gif" width="300" alt="Cursor moving between buttons along curved, human-paced paths and clicking each"> | <img src="docs/media/typing.gif" width="300" alt="Two form fields filled with an uneven typing rhythm, including a typo that is backspaced and corrected"> | <img src="docs/media/scroll.gif" width="300" alt="A long page scrolled in wheel bursts down to a target button, which is clicked, then scrolled back up"> |
-| Recorded human paths, overshoot and correction | Markov rhythm, typos, backspace fixes | Wheel bursts with momentum, then a click |
+| Mouse movement | Typing |
+|:---:|:---:|
+| <img src="docs/media/mouse.gif" width="420" alt="Cursor moving between buttons along curved, human-paced paths and clicking each"> | <img src="docs/media/typing.gif" width="420" alt="Two form fields filled with an uneven typing rhythm, including a typo that is backspaced and corrected"> |
+| Recorded human paths, overshoot and correction | Markov rhythm, typos, backspace fixes |
 
-The GIFs come from [`js/scripts/record-demos.mjs`](js/scripts/record-demos.mjs)
-(`npm run build && node scripts/record-demos.mjs` in `js/`), with seed `20260925`.
+**Scrolling**
+
+<img src="docs/media/scroll.gif" width="720" alt="A careers page with a fixed nav and cookie bar. The cursor scrolls down in two wheel flicks to an Apply button that lands mid-screen, clicks it, scrolls a nested location list to Toronto and picks it, then flicks back to the top. A side panel charts each wheel event and the page and list scroll positions.">
+
+The cursor scrolls to **Apply now** in two flicks and lands it clear of the fixed nav and
+cookie bar, then scrolls the nested location list (not the page) to pick Toronto, and
+flicks back to the top. The panel charts every wheel event the page received and the
+scroll positions of the page and the list. It is drawn onto the frames afterwards from a
+timestamped event log, so it doesn't slow the page down; the scroll plays at its real speed.
+
+The GIFs come from [`js/scripts/record-demos.mjs`](js/scripts/record-demos.mjs) with seed
+`20260925`: `npm run build && node scripts/record-demos.mjs` in `js/`, or name demos to
+record only those (`node scripts/record-demos.mjs scroll`).
 
 ```
 ┌──────────────────────────────┐
