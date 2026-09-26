@@ -58,11 +58,11 @@ export function cdpDriver(page: CdpCapablePage): Driver {
       const c = await client()
       await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
     },
-    async click(button: MouseButton = 'left') {
+    async click(button: MouseButton = 'left', clickCount = 1) {
       const c = await client()
-      await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: 1 })
+      await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount })
       if (CLICK_HOLD_MS > 0) await new Promise((r) => setTimeout(r, CLICK_HOLD_MS))
-      await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 })
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount })
     },
     async wheel(deltaX, deltaY) {
       const c = await client()

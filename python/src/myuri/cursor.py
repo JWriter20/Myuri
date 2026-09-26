@@ -7,7 +7,7 @@ import time
 from dataclasses import replace
 from typing import Any, Optional
 
-from .drivers.base import Driver, define_driver  # noqa: F401 (re-exported convenience)
+from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
 from .geometry import (
     VIEWPORT_PADDING,
@@ -42,6 +42,75 @@ async def _delay(ms: float) -> None:
 
 def _point_in_box(p: Vector, b: BoundingBox) -> bool:
     return b.x <= p.x <= b.x + b.width and b.y <= p.y <= b.y + b.height
+
+
+# Page function for clear_existing (mirror of ``focusedField`` in js/src/cursor.ts):
+# the focused field, found by following focus through open shadow roots and
+# same-origin iframes, with its box in top-page coordinates. Null when no field
+# has focus (or it sits in a cross-origin frame). Tag names, not instanceof,
+# since elements in an iframe belong to that frame's realm.
+_FOCUSED_FIELD_JS = r"""() => {
+  var el = document.activeElement, ox = 0, oy = 0;
+  for (;;) {
+    if (!el) return null;
+    if (el.shadowRoot && el.shadowRoot.activeElement) {
+      el = el.shadowRoot.activeElement;
+    } else if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      var fdoc = null;
+      try { fdoc = el.contentDocument; } catch (e) { fdoc = null; }
+      if (!fdoc) return null;
+      var fr = el.getBoundingClientRect();
+      ox += fr.x + el.clientLeft;
+      oy += fr.y + el.clientTop;
+      el = fdoc.activeElement;
+    } else {
+      break;
+    }
+  }
+  var doc = el.ownerDocument;
+  // A frame's body only counts when it is itself the editor (designMode or
+  // contenteditable), as rich-text editors built on iframes do.
+  if (el === doc.body && !el.isContentEditable) return null;
+  var r = el.getBoundingClientRect();
+  var cs = (doc.defaultView || window).getComputedStyle(el);
+  var isTextControl = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+  var text = isTextControl ? el.value : el.innerText.replace(/\n+$/, '');
+  var lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+  var firstLine = {
+    x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + 6,
+    y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop + lineHeight / 2
+  };
+  var selection;
+  if (isTextControl) {
+    // email/number inputs expose no selection range; they are single-line,
+    // which triple-click always selects whole.
+    selection = el.selectionStart == null || (el.selectionStart === 0 && el.selectionEnd === text.length)
+      ? 'all' : 'partial';
+  } else {
+    selection = String(doc.getSelection()).trim() === el.innerText.trim() ? 'all' : 'partial';
+    // Rich content: aim at the first visible character instead.
+    var walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (var n = walker.nextNode(); n; n = walker.nextNode()) {
+      var i = (n.textContent || '').search(/\S/);
+      if (i < 0) continue;
+      var range = doc.createRange();
+      range.setStart(n, i);
+      range.setEnd(n, i + 1);
+      var c = range.getBoundingClientRect();
+      firstLine = { x: c.left + c.width / 2 + 4, y: c.top + c.height / 2 };
+      break;
+    }
+  }
+  return {
+    box: { x: r.x + ox, y: r.y + oy, width: r.width, height: r.height },
+    empty: text.trim() === '',
+    selection: selection,
+    lines: text === '' ? 1 : text.split('\n').length,
+    visualLines: Math.ceil(el.scrollHeight / lineHeight),
+    scrollTop: el.scrollTop,
+    firstLine: { x: firstLine.x + ox, y: firstLine.y + oy }
+  };
+}"""
 
 
 # Container-aware scroll plan (mirror of ``computeScrollPlan`` in js/src/cursor.ts;
@@ -265,6 +334,7 @@ class Cursor:
         dimensions: Optional[dict] = None,
         perform_random_moves_initially: bool = False,
         defaults: Optional[dict] = None,
+        select_all_modifier: Optional[str] = None,
     ) -> None:
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
@@ -280,6 +350,10 @@ class Cursor:
         else:
             self._settings = resolve_settings(None)
         self._defaults = defaults or {}
+        # Opt-in keyboard select-all for clear_existing. Off by default: the
+        # modifier reveals the real OS (pages read ctrlKey/metaKey, and browsers
+        # only honor the host OS's one), so fields are cleared by triple-click.
+        self._select_all_modifier = select_all_modifier
         self._previous = start or get_better_starting_position(dimensions, self._rng)
         self._is_moving = False
         self._performing_random_moves = False
@@ -522,11 +596,61 @@ class Cursor:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
 
     # ---- typing ----
-    async def _platform_select_all_modifier(self) -> str:
-        is_mac = await self._driver.evaluate(
-            "() => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)", None
-        )
-        return "Meta" if is_mac else "Control"
+    async def _clear_focused_field(self, focus_clicked: bool) -> None:
+        """Empty the focused field, by default without sending a modifier key.
+
+        Triple-click selects a single-line field outright; multi-line content is
+        triple-clicked on its first paragraph and extended with Shift+ArrowDown
+        (the same keys on every OS). ``focus_clicked`` means the click that
+        focused the field just happened at the cursor, so it counts as click 1.
+        """
+        field = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+        if not field:
+            raise RuntimeError("myuri: clear_existing needs a focused field (pass a selector)")
+        if field["empty"]:
+            return
+        if self._select_all_modifier:
+            await self._typer.delete_all(0, self._select_all_modifier)
+        else:
+            box = BoundingBox(**field["box"])
+            if not _point_in_box(self._previous, box):
+                await self._move_along(get_random_box_point(box, None, self._previous, [], self._rng), None, False)
+                focus_clicked = False
+            first_click = 2 if focus_clicked else 1
+            if field["lines"] > 1:
+                # Triple-click selects one paragraph, so start on the first one:
+                # wheel the field back to its top if needed, then click there.
+                for _ in range(30):
+                    if field["scrollTop"] <= 0:
+                        break
+                    await self._driver.wheel(0, -min(field["scrollTop"], 80 + self._rng() * 80))
+                    await _delay(30 + self._rng() * 40)
+                    field = await self._driver.evaluate(_FOCUSED_FIELD_JS, None) or field
+                first = field["firstLine"]
+                await self._move_along(Vector(first["x"] + self._rng() * 12, first["y"] + (self._rng() - 0.5) * 3), None, False)
+                first_click = 1
+            # Drivers written before click_count get plain clicks; the check
+            # below then reports the field as not cleared.
+            multi_click = _accepts_positional(self._driver.click, 2)
+            for click_count in range(first_click, 4):
+                if click_count > 1:
+                    await _delay(70 + self._rng() * 90)
+                await (self._driver.click("left", click_count) if multi_click else self._driver.click("left"))
+            if field["lines"] > 1:
+                await _delay(120 + self._rng() * 120)
+                await self._driver.down("Shift")
+                for _ in range(max(field["lines"], field["visualLines"]) + 2):
+                    current = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+                    if not current or current["selection"] != "partial":
+                        break
+                    await self._driver.press("ArrowDown")
+                    await _delay(40 + self._rng() * 60)
+                await self._driver.up("Shift")
+            await _delay(60 + self._rng() * 90)
+            await self._typer.delete_all(1)
+        after = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+        if not (after and after["empty"]):
+            raise RuntimeError("myuri: clear_existing could not empty the focused field")
 
     async def type(self, text: str, selector: Optional[str] = None, options: Optional[TypeOptions] = None) -> None:
         was_random = self._start_action()
@@ -534,7 +658,7 @@ class Cursor:
             if selector is not None:
                 await self.click(selector, ClickOptions(wait_for_click=30, wait_for_selector=_pick(options, "wait_for_selector", 10000), max_tries=_pick(options, "max_tries", 3)))
             if _pick(options, "clear_existing", False):
-                await self._typer.delete_all(0, await self._platform_select_all_modifier())
+                await self._clear_focused_field(selector is not None)
             await self._typer.type(text)
         finally:
             await self._end_action(was_random, 0, False)

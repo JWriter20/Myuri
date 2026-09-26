@@ -21,11 +21,11 @@ class PlaywrightDriver(Driver):
     async def move(self, x: float, y: float) -> None:
         await self._page.mouse.move(x, y)
 
-    async def click(self, button: str = "left") -> None:
-        await self._page.mouse.down(button=button)
+    async def click(self, button: str = "left", click_count: int = 1) -> None:
+        await self._page.mouse.down(button=button, click_count=click_count)
         if _CLICK_HOLD_S > 0:
             await asyncio.sleep(_CLICK_HOLD_S)
-        await self._page.mouse.up(button=button)
+        await self._page.mouse.up(button=button, click_count=click_count)
 
     async def down(self, key: str) -> None:
         await self._page.keyboard.down(key)

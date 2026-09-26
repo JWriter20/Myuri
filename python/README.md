@@ -45,6 +45,10 @@ driver = define_driver(
 cursor = create_cursor(driver, seed=1234)
 ```
 
+`my_click(button, click_count)` should pass `click_count` through to the browser (2 and 3
+continue a double/triple click). `clear_existing` triple-clicks to select a field's text,
+so a click that ignores it can't clear fields.
+
 `evaluate(js, arg)` receives a JS arrow-function *source string* and one
 JSON-serializable argument, and must run it in the page and return the result — the
 same contract as Playwright's `page.evaluate`.

@@ -31,9 +31,9 @@ class CdpDriver(Driver):
         client = await self._client()
         await client.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
 
-    async def click(self, button: str = "left") -> None:
+    async def click(self, button: str = "left", click_count: int = 1) -> None:
         client = await self._client()
-        base = {"x": self._x, "y": self._y, "button": button, "clickCount": 1}
+        base = {"x": self._x, "y": self._y, "button": button, "clickCount": click_count}
         await client.send("Input.dispatchMouseEvent", {"type": "mousePressed", **base})
         if _CLICK_HOLD_S > 0:
             await asyncio.sleep(_CLICK_HOLD_S)

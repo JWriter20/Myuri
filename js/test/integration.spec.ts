@@ -62,8 +62,8 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
     async move(x, y) {
       record('move', x, y)
     },
-    async click(button) {
-      record('click', button)
+    async click(button, clickCount = 1) {
+      record('click', button, clickCount)
     },
     async down(key) {
       record('down', key)
@@ -141,6 +141,67 @@ describe('Cursor (headless integration)', () => {
     const pressed = calls.filter((c) => c.op === 'press').map((c) => c.args[0])
     expect(pressed).toContain('h')
     expect(pressed).toContain('i')
+  })
+
+  /**
+   * Give the fake a focused field (the target rect) holding `text`. The
+   * focused-field page function can't run against the DOM stub, so answer it
+   * directly; Backspace empties the field, as it would once triple-click has
+   * selected everything.
+   */
+  function withFocusedField(fake: ReturnType<typeof makeFakeDriver>, text: string) {
+    let value = text
+    const driver: Driver = {
+      ...fake.driver,
+      async evaluate<A, R>(fn: PageFunction<A, R>, arg: A): Promise<R> {
+        if (String(fn).includes('visualLines')) {
+          const { rect } = fake
+          return {
+            box: rect,
+            empty: value === '',
+            selection: 'all',
+            lines: 1,
+            visualLines: 1,
+            scrollTop: 0,
+            firstLine: { x: rect.x + 8, y: rect.y + rect.height / 2 },
+          } as R
+        }
+        return fake.driver.evaluate(fn, arg)
+      },
+      async press(key, options) {
+        if (key === 'Backspace') value = ''
+        return fake.driver.press(key, options)
+      },
+    }
+    return { driver, calls: fake.calls }
+  }
+
+  const clickCounts = (calls: Array<{ op: string; args: unknown[] }>) =>
+    calls.filter((c) => c.op === 'click').map((c) => c.args[1])
+
+  it('clearExisting triple-clicks and never sends a modifier key', async () => {
+    const { driver, calls } = withFocusedField(makeFakeDriver(), 'Glassdoor')
+    const cursor = createCursor({ driver, seed: 5, settings: { typing: { mistakeMultiplier: 0 } } })
+    await cursor.type('hi', '#target', { clearExisting: true })
+    // The focusing click is click 1; clicks 2 and 3 complete the triple-click.
+    expect(clickCounts(calls)).toEqual([1, 2, 3])
+    expect(calls.filter((c) => c.op === 'down' && ['Control', 'Meta'].includes(c.args[0] as string))).toEqual([])
+    expect(calls.some((c) => c.op === 'press' && c.args[0] === 'Backspace')).toBe(true)
+  })
+
+  it('clearExisting leaves an empty field alone', async () => {
+    const { driver, calls } = withFocusedField(makeFakeDriver(), '')
+    const cursor = createCursor({ driver, seed: 5, settings: { typing: { mistakeMultiplier: 0 } } })
+    await cursor.type('hi', '#target', { clearExisting: true })
+    expect(clickCounts(calls)).toEqual([1])
+  })
+
+  it('clearExisting uses keyboard select-all only when selectAllModifier is set', async () => {
+    const { driver, calls } = withFocusedField(makeFakeDriver(), 'Glassdoor')
+    const cursor = createCursor({ driver, seed: 5, selectAllModifier: 'Meta', settings: { typing: { mistakeMultiplier: 0 } } })
+    await cursor.type('hi', '#target', { clearExisting: true })
+    expect(calls.some((c) => c.op === 'down' && c.args[0] === 'Meta')).toBe(true)
+    expect(clickCounts(calls)).toEqual([1])
   })
 
   it('is deterministic: same seed -> same landing point', async () => {
