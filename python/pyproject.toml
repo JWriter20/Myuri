@@ -20,7 +20,7 @@ dependencies = []
 
 [project.optional-dependencies]
 playwright = ["playwright>=1.40"]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "playwright>=1.40", "mypy>=1.8", "ruff>=0.5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "playwright>=1.40", "mypy>=1.8", "ruff>=0.5,<0.16"]
 
 [project.urls]
 Homepage = "https://github.com/JWriter20/Myuri"
