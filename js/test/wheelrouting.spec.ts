@@ -140,4 +140,29 @@ describe.skipIf(!hasChromium)('wheel routing hover probe (live browser)', () => 
       await page.close()
     }
   })
+
+  // FlashCollection benchmark 2026-10-28 (Ashby, lpadesignstudios): after typing "3.8" into a GPA number input the
+  // cursor sat on it, still focused. The next scroll's wheel stepped the value (it cleared it) instead of moving the
+  // page, so every later field reported "could not bring into view".
+  it('moves off a focused number input before wheeling', async () => {
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    await page.setContent(`<!doctype html><html><head><style>
+      * { margin: 0; box-sizing: border-box; }
+      body { height: 2000px; }
+      #gpa { position: absolute; left: 300px; top: 170px; width: 200px; height: 40px; }
+      #target { position: absolute; top: 1500px; left: 350px; width: 120px; height: 30px; }
+    </style></head><body><input id="gpa" type="number" step="0.1"><button id="target">go</button></body></html>`)
+    await page.fill('#gpa', '3.8')
+    await page.focus('#gpa')
+    const { driver, ops } = recordingDriver(fromPlaywright(page))
+    const cursor = createCursor({ driver, seed: 14, start: { x: 400, y: 190 } })
+
+    await cursor.click('#target')
+
+    const hover = firstWheelHover(ops)
+    expect(hover.x < 300 || hover.x > 500 || hover.y < 170 || hover.y > 210).toBe(true)
+    expect(await page.inputValue('#gpa')).toBe('3.8')
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+    await page.close()
+  })
 })
