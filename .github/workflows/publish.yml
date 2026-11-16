@@ -5,8 +5,7 @@ name: Publish
 # `feat` → minor, anything else → patch (patch is the floor, so every merge ships) —
 # then publishes both packages at that version and records it back:
 #   - npm  (myuri, public): tokenless via OIDC trusted publishing
-#   - PyPI (myuri): tokenless via OIDC trusted publishing; the wheel and sdist are
-#     also attached to the GitHub Release
+#   - PyPI (myuri): tokenless via OIDC trusted publishing
 # The bump is committed as `release: v<ver> [skip ci]`; the [skip ci] keeps that
 # commit from re-triggering this workflow.
 #
@@ -34,9 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC trusted publishing (npm)
-      contents: write # push the version bump + tag, create the GitHub Release
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      contents: write # push the version bump + tag
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,19 +111,13 @@ jobs:
           packages-dir: python/dist
           skip-existing: true
 
-      - name: Record release (commit + tag + GitHub Release)
+      - name: Record release (commit + tag)
         env:
           NEXT: ${{ steps.ver.outputs.next }}
-          NPM_OUTCOME: ${{ steps.npm.outcome }}
         run: |
-          NOTES="pip install myuri==$NEXT"
-          [ "$NPM_OUTCOME" = success ] && NOTES="npm install myuri@$NEXT · $NOTES"
           TAG="myuri-v$NEXT"
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git commit -am "release: v$NEXT [skip ci]"
           git tag "$TAG"
           git push origin HEAD:main "$TAG"
-          gh release create "$TAG" python/dist/* \
-            --title "myuri v$NEXT" \
-            --notes "$NOTES"
