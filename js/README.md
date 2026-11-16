@@ -8,13 +8,13 @@ not talk to a browser itself — you inject a small **Driver**, so it works with
 Playwright, Puppeteer, raw CDP, or anything you can wrap.
 
 ```bash
-npm install myuri
+npm install @jwriter20/myuri
 ```
 
 ## Quick start (Playwright)
 
 ```ts
-import { createCursor } from 'myuri'
+import { createCursor } from '@jwriter20/myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -31,7 +31,7 @@ await cursor.dispose()
 ## Bring your own driver
 
 ```ts
-import { createCursor, defineDriver } from 'myuri'
+import { createCursor, defineDriver } from '@jwriter20/myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
@@ -51,14 +51,14 @@ const cursor = createCursor({
 `fromPlaywright` / `fromCDP` / `fromPuppeteer` turn a page into a driver:
 
 ```ts
-import { createCursor, fromPlaywright, fromCDP } from 'myuri'
+import { createCursor, fromPlaywright, fromCDP } from '@jwriter20/myuri'
 
 const cursor = createCursor(fromPlaywright(page), { seed: 1234 })
 // or let createCursor infer the driver from a raw page:
 const cursor2 = createCursor(page, { seed: 1234 })
 ```
 
-(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `myuri/drivers` are
+(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `@jwriter20/myuri/drivers` are
 the same functions under descriptive names.)
 
 The `Driver` needs input primitives (`move`, `click`, `down`, `up`, `wheel`, `press`)

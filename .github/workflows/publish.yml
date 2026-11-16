@@ -4,15 +4,15 @@ name: Publish
 # Conventional-Commit subjects since the last `myuri-v*` tag — `!`/BREAKING → major,
 # `feat` → minor, anything else → patch (patch is the floor, so every merge ships) —
 # then publishes both packages at that version and records it back:
-#   - npm  (myuri, public): tokenless via OIDC trusted publishing
+#   - npm  (@jwriter20/myuri, public; plain `myuri` is blocked as too similar to `mri`): tokenless via OIDC trusted publishing
 #   - PyPI (myuri): tokenless via OIDC trusted publishing
 # The bump is committed as `release: v<ver> [skip ci]`; the [skip ci] keeps that
 # commit from re-triggering this workflow.
 #
 # One-time setup (by the account owner, no tokens or secrets in this repo):
 #   - npm: trusted publishing cannot create a package, so the first version of
-#     `myuri` is published by hand (`npm publish` in js/ as jwriter20). Then
-#     npmjs.com → myuri → Settings → Trusted Publisher → GitHub Actions
+#     `@jwriter20/myuri` is published by hand (`npm publish` in js/ as jwriter20). Then
+#     npmjs.com → @jwriter20/myuri → Settings → Trusted Publisher → GitHub Actions
 #     (JWriter20/Myuri, publish.yml).
 #   - PyPI: pypi.org/manage/account/publishing → add a pending publisher
 #     (project myuri, owner JWriter20, repo Myuri, workflow publish.yml, no
@@ -70,10 +70,9 @@ jobs:
           echo "last=$LAST level=$LEVEL next=$NEXT"
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
 
-      - name: Publish npm (myuri) via OIDC
+      - name: Publish npm (@jwriter20/myuri) via OIDC
         id: npm
-        # npm currently rejects the name `myuri` (too similar to `mri`); a failed
-        # npm publish must not hold back the PyPI release.
+        # A failed npm publish must not hold back the PyPI release.
         continue-on-error: true
         working-directory: js
         env:
@@ -89,9 +88,9 @@ jobs:
           # Idempotent: a re-run after a partial failure must not red-fail on a
           # version that already made it to the registry.
           if npm publish --access public 2>err.log; then
-            echo "Published myuri@$NEXT"
+            echo "Published @jwriter20/myuri@$NEXT"
           elif grep -q "previously published versions" err.log; then
-            echo "myuri@$NEXT already on npm — no-op."
+            echo "@jwriter20/myuri@$NEXT already on npm — no-op."
           else
             cat err.log >&2; exit 1
           fi
