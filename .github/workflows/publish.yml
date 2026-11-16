@@ -74,6 +74,10 @@ jobs:
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
 
       - name: Publish npm (myuri) via OIDC
+        id: npm
+        # npm currently rejects the name `myuri` (too similar to `mri`); a failed
+        # npm publish must not hold back the PyPI release.
+        continue-on-error: true
         working-directory: js
         env:
           NEXT: ${{ steps.ver.outputs.next }}
@@ -113,7 +117,10 @@ jobs:
       - name: Record release (commit + tag + GitHub Release)
         env:
           NEXT: ${{ steps.ver.outputs.next }}
+          NPM_OUTCOME: ${{ steps.npm.outcome }}
         run: |
+          NOTES="pip install myuri==$NEXT"
+          [ "$NPM_OUTCOME" = success ] && NOTES="npm install myuri@$NEXT · $NOTES"
           TAG="myuri-v$NEXT"
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
@@ -122,4 +129,4 @@ jobs:
           git push origin HEAD:main "$TAG"
           gh release create "$TAG" python/dist/* \
             --title "myuri v$NEXT" \
-            --notes "npm install myuri@$NEXT · pip install myuri==$NEXT"
+            --notes "$NOTES"
