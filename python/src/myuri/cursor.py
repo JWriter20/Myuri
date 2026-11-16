@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 from dataclasses import replace
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
@@ -19,7 +20,8 @@ from .geometry import (
 )
 from .motion.scroll_model import scroll_model
 from .motion.wheel_model import generate_wheel_path
-from .options import ClickOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
+from .motion.click_model import click_hold_ms, drag_carry_speed, drag_end_ms, drag_start_ms, multi_click_gap_ms, pre_click_dwell_ms
+from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import (
     _RESOLVER,
     bounding_box_of,
@@ -81,6 +83,16 @@ _FOCUSED_FIELD_JS = r"""() => {
     x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + 6,
     y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop + lineHeight / 2
   };
+  var contentLeft = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+  var lineTop = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop;
+  var span = { left: contentLeft, right: contentLeft, top: lineTop, bottom: lineTop + lineHeight };
+  if (el.tagName === 'TEXTAREA') {
+    var ctx = doc.createElement('canvas').getContext('2d');
+    if (ctx) {
+      ctx.font = cs.font;
+      span.right = contentLeft + ctx.measureText(text.split('\n')[0]).width;
+    }
+  }
   var selection;
   if (isTextControl) {
     // email/number inputs expose no selection range; they are single-line,
@@ -99,6 +111,9 @@ _FOCUSED_FIELD_JS = r"""() => {
       range.setEnd(n, i + 1);
       var c = range.getBoundingClientRect();
       firstLine = { x: c.left + c.width / 2 + 4, y: c.top + c.height / 2 };
+      range.setEnd(n, (n.textContent || '').length);
+      var line = range.getClientRects()[0] || c;
+      span = { left: c.left, right: line.right, top: line.top, bottom: line.bottom };
       break;
     }
   }
@@ -107,6 +122,8 @@ _FOCUSED_FIELD_JS = r"""() => {
     empty: text.trim() === '',
     selection: selection,
     lines: text === '' ? 1 : text.split('\n').length,
+    singleLine: el.tagName === 'INPUT',
+    firstLineSpan: { left: span.left + ox, right: span.right + ox, top: span.top + oy, bottom: span.bottom + oy },
     visualLines: Math.ceil(el.scrollHeight / lineHeight),
     scrollTop: el.scrollTop,
     firstLine: { x: firstLine.x + ox, y: firstLine.y + oy }
@@ -352,6 +369,8 @@ class Cursor:
         # only honor the host OS's one), so fields are cleared by triple-click.
         self._select_all_modifier = select_all_modifier
         self._previous = start or get_better_starting_position(dimensions, self._rng)
+        # time.monotonic() of the last mouse move, for the pause before a press.
+        self._last_move_at = 0.0
         self._is_moving = False
         self._performing_random_moves = False
         self._random_move_task: Optional[asyncio.Task] = None
@@ -437,6 +456,27 @@ class Cursor:
             self._schedule_random_move()
 
     # ---- primitive motion ----
+    async def _press(self, button: str, click_count: int, hold_ms: Optional[float] = None) -> None:
+        """Press and release a button where the cursor is, timed like a person.
+
+        The first click of a gesture waits a drawn beat after the last move, and
+        the button is held for a drawn time (see ``motion/click_model.py``).
+        Drivers written before ``click_count``/``hold_ms`` get what they take;
+        one without ``click_count`` makes plain clicks, so clearing a field
+        then reports it as not cleared.
+        """
+        if click_count == 1:
+            await _delay(self._last_move_at * 1000.0 + pre_click_dwell_ms(self._rng) - time.monotonic() * 1000.0)
+        drawn = click_hold_ms(self._rng)
+        hold = drawn if hold_ms is None else hold_ms
+        click = self._driver.click
+        if _accepts_positional(click, 3):
+            await click(button, click_count, hold)
+        elif _accepts_positional(click, 2):
+            await click(button, click_count)
+        else:
+            await click(button)
+
     async def _trace_path(self, vectors) -> None:
         if not vectors:
             return
@@ -452,6 +492,7 @@ class Cursor:
             t0 = time.monotonic()
             await self._driver.move(pos.x, pos.y)
             self._previous = pos
+            self._last_move_at = time.monotonic()
             await _delay(target_delta - (time.monotonic() - t0) * 1000.0)
 
     async def _move_along(self, destination: Vector, options, allow_overshoot: bool) -> None:
@@ -569,6 +610,51 @@ class Cursor:
         if last_error:
             raise last_error
 
+    async def drag(self, from_: Union[str, Vector], to: Union[str, Vector], options: Optional[DragOptions] = None) -> None:
+        """Press on ``from_``, move to ``to`` with the button held, and release.
+
+        Timed like recorded people (see ``motion/click_model.py``). Each end is a
+        selector (a point inside the element is chosen, as for :meth:`click`)
+        or a viewport :class:`Vector`. ``to`` is measured after the press, so a
+        drop zone that appears once a drag starts works. Needs a driver with
+        ``mouse_down``/``mouse_up`` (the built-in drivers have them).
+        """
+        opts = options if options is not None else DragOptions()
+        button = _pick(options, "button", "left")
+        was_random = self._start_action()
+        try:
+            if isinstance(from_, str):
+                await self._move_to_element(from_, opts)
+            else:
+                await self._move_along(from_, opts, False)
+            await _delay(self._last_move_at * 1000.0 + pre_click_dwell_ms(self._rng) - time.monotonic() * 1000.0)
+            await self._driver.mouse_down(button)
+            released = False
+            try:
+                await _delay(drag_start_ms(self._rng))
+                if isinstance(to, str):
+                    box = await bounding_box_of(self._driver, to)
+                    if not box:
+                        raise RuntimeError(f"myuri: drag target not found or not visible: {to}")
+                    target = get_random_box_point(box, opts, self._previous, [], self._rng)
+                else:
+                    target = to
+                # Carrying something, people move slower and steer straight to the drop: no overshoot.
+                carry = dataclasses.replace(opts, move_speed=(_pick(opts, "move_speed", 1) or 1) * drag_carry_speed(self._rng))
+                await self._move_along(target, carry, False)
+                await _delay(self._last_move_at * 1000.0 + drag_end_ms(self._rng) - time.monotonic() * 1000.0)
+                released = True
+                await self._driver.mouse_up(button)
+            finally:
+                if not released:
+                    try:
+                        await self._driver.mouse_up(button)
+                    except Exception:
+                        pass
+            await _delay(_pick(options, "wait_for_release", 50))
+        finally:
+            await self._end_action(was_random, 0, False)
+
     async def click(self, selector: Optional[str] = None, options: Optional[ClickOptions] = None) -> None:
         was_random = self._start_action()
         try:
@@ -587,7 +673,11 @@ class Cursor:
                 if _pick(options, "micro_jitter", False):
                     await self._driver.move(self._previous.x + (self._rng() - 0.5) * 2, self._previous.y + (self._rng() - 0.5) * 2)
                     await _delay(15 + self._rng() * 10)
-            await self._driver.click(button)
+            count = max(1, min(3, round(_pick(options, "click_count", 1) or 1)))
+            for click_count in range(1, count + 1):
+                if click_count > 1:
+                    await _delay(multi_click_gap_ms(self._rng))
+                await self._press(button, click_count, _pick(options, "hold_ms", None))
             await _delay(max(_pick(options, "wait_for_click", 50), 15))
         finally:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
@@ -614,7 +704,14 @@ class Cursor:
                 await self._move_along(get_random_box_point(box, None, self._previous, [], self._rng), None, False)
                 focus_clicked = False
             first_click = 2 if focus_clicked else 1
-            if field["lines"] > 1:
+            # One line in a textarea or editor needs this too unless the cursor
+            # is already on the text: Firefox selects nothing when the clicks
+            # land in the blank space after it.
+            span = field.get("firstLineSpan")
+            on_first_line = span is None or (
+                span["left"] <= self._previous.x <= span["right"] - 2 and span["top"] <= self._previous.y <= span["bottom"]
+            )
+            if field["lines"] > 1 or (field.get("singleLine") is False and not on_first_line):
                 # Triple-click selects one paragraph, so start on the first one:
                 # wheel the field back to its top if needed, then click there.
                 for _ in range(30):
@@ -626,13 +723,10 @@ class Cursor:
                 first = field["firstLine"]
                 await self._move_along(Vector(first["x"] + self._rng() * 12, first["y"] + (self._rng() - 0.5) * 3), None, False)
                 first_click = 1
-            # Drivers written before click_count get plain clicks; the check
-            # below then reports the field as not cleared.
-            multi_click = _accepts_positional(self._driver.click, 2)
             for click_count in range(first_click, 4):
                 if click_count > 1:
-                    await _delay(70 + self._rng() * 90)
-                await (self._driver.click("left", click_count) if multi_click else self._driver.click("left"))
+                    await _delay(multi_click_gap_ms(self._rng))
+                await self._press("left", click_count)
             if field["lines"] > 1:
                 await _delay(120 + self._rng() * 120)
                 await self._driver.down("Shift")

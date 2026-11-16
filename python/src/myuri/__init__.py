@@ -17,6 +17,7 @@ from .drivers import (
 from .geometry import get_better_starting_position, get_random_box_point, path
 from .options import (
     ClickOptions,
+    DragOptions,
     MoveOptions,
     MoveToOptions,
     RandomMoveOptions,
@@ -60,6 +61,7 @@ __all__ = [
     "get_better_starting_position",
     "MoveOptions",
     "ClickOptions",
+    "DragOptions",
     "MoveToOptions",
     "ScrollOptions",
     "TypeOptions",
