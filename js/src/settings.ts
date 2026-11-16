@@ -4,6 +4,8 @@
  * two cursors with different seeds never share or race on mutable config.
  */
 
+import type { WheelStyle } from './motion/wheel-model.js'
+
 export interface MyuriSettings {
   overshoot: {
     spread: number
@@ -25,17 +27,27 @@ export interface MyuriSettings {
     overshoot: number
     finishPosition: number
     realism: { speedIrregularity: number }
+    /**
+     * What the identity scrolls with. `trackpad` (default) sends a stream of
+     * small pixel deltas; `mouse` turns a wheel in notches (see `wheel`).
+     * Camoufox turns every wheel call into notches, so use `mouse` there.
+     */
+    device: 'trackpad' | 'mouse'
+    wheel: {
+      /** `notched` (Windows, Linux) or `macos` (accelerated lines in 20 ms frames). */
+      style: WheelStyle
+      pxPerNotch: number
+      pxPerLine: number
+    }
   }
   typing: {
     wpm: number
     mistakeMultiplier: number
     /**
-     * Per-keystroke hold delay (keydown→keyup), in ms, sampled uniformly in
-     * [min, max]. Independent of `wpm`, this is a realistic floor so a burst at
-     * very high wpm still holds each key briefly — which also gives async widgets
-     * (autocomplete/typeahead dropdowns) time to react between keys. 0/0 to disable.
+     * @deprecated Ignored since 3.1. Key holds are now drawn per key from
+     * recorded typing (see `typing/timing.ts`); accepted so old configs load.
      */
-    keyDelay: { min: number; max: number }
+    keyDelay?: { min: number; max: number }
   }
 }
 
@@ -60,11 +72,12 @@ export const defaultSettings: MyuriSettings = {
     overshoot: 30,
     finishPosition: 0.5,
     realism: { speedIrregularity: 0.08 },
+    device: 'trackpad',
+    wheel: { style: 'notched', pxPerNotch: 100, pxPerLine: 16 },
   },
   typing: {
     wpm: 80,
     mistakeMultiplier: 1.0,
-    keyDelay: { min: 30, max: 50 },
   },
 }
 

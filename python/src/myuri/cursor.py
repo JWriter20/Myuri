@@ -18,6 +18,7 @@ from .geometry import (
     should_overshoot,
 )
 from .motion.scroll_model import scroll_model
+from .motion.wheel_model import generate_wheel_path
 from .options import ClickOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import (
     _RESOLVER,
@@ -307,20 +308,16 @@ class _DriverTyperInput:
     def __init__(self, driver: Driver) -> None:
         self._d = driver
 
-    async def press(self, key: str, delay: Optional[float] = None) -> None:
-        # Playwright press() only knows named keys + US-layout printables; other
-        # single code points (an AZERTY 'é' typo slip, emoji) throw "Unknown key"
-        # and abort typing mid-field — insert those as text instead.
-        if len(key) == 1 and not (0x20 <= ord(key) <= 0x7E):
-            await self._d.insert_text(key)
-        else:
-            await self._d.press(key, delay)
-
     async def down(self, key: str) -> None:
         await self._d.down(key)
 
     async def up(self, key: str) -> None:
         await self._d.up(key)
+
+    async def insert_text(self, text: str) -> None:
+        # Code points no US-layout key produces (an AZERTY 'é' typo slip,
+        # emoji): Playwright's keyboard would throw "Unknown key".
+        await self._d.insert_text(text)
 
 
 class Cursor:
@@ -728,7 +725,16 @@ class Cursor:
         speed_irregularity = getattr(realism, "speed_irregularity", None) if realism else None
         if speed_irregularity is None:
             speed_irregularity = self._settings.scroll.realism.speed_irregularity
-        events = scroll_model.generate_scroll_path(wanted, self._rng, None, speed_irregularity)
+        mouse = self._settings.scroll.device == "mouse"
+        if mouse:
+            wheel = self._settings.scroll.wheel
+            events = generate_wheel_path(
+                wanted, self._rng, wheel.style, wheel.px_per_notch, wheel.px_per_line
+            )
+        else:
+            events = scroll_model.generate_scroll_path(wanted, self._rng, None, speed_irregularity)
+        # A wheel moves in whole notches, so calibrate against what was sent.
+        dispatched = sum(ev.delta_y for ev in events)
         sf = _pick(options, "speed_factor", self._settings.scroll.speed_factor)
 
         # Emit the gesture on the model's clock, like an input device: never wait
@@ -753,7 +759,8 @@ class Cursor:
             if failed():
                 break
             accumulator += ev.delta_y
-            if abs(accumulator) >= 8:
+            # A notch is one event however small; only trackpad deltas batch.
+            if mouse or abs(accumulator) >= 8:
                 dispatch = int(accumulator)
                 accumulator -= dispatch
                 sent.append(asyncio.ensure_future(self._driver.wheel(0, dispatch)))
@@ -772,11 +779,11 @@ class Cursor:
         if pre is not None:
             post = await self._settle_scroll(pre)
             actual = post - pre
-            if self._scroll_multiplier is None and abs(wanted) > 10 and abs(actual) > 10:
+            if self._scroll_multiplier is None and abs(dispatched) > 10 and abs(actual) > 10:
                 # Clamp: a first scroll truncated by maxScroll (or partially
                 # consumed by an inner scroller) would otherwise poison every
                 # subsequent scroll with a wildly inflated multiplier.
-                self._scroll_multiplier = min(3.0, max(0.3, round((wanted / actual) * 100) / 100))
+                self._scroll_multiplier = min(3.0, max(0.3, round((dispatched / actual) * 100) / 100))
         else:
             await _delay(120)  # let the container settle (window-scroll settle doesn't apply)
 

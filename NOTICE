@@ -24,3 +24,21 @@ original author credits to:
     (https://ieeexplore.ieee.org/document/9465583)
   - MIMIC-LOGICS, for Mouse-Synthesizer
     (https://github.com/MIMIC-LOGICS/Mouse-Synthesizer)
+
+Typing rhythm
+-------------
+
+js/src/typing/bigrams.ts and python/src/myuri/typing_engine/bigrams.py embed
+a table derived from english_bigrams.txt in John Burkardt's NGRAMS dataset
+(https://people.sc.fsu.edu/~jburkardt/datasets/ngrams/ngrams.html),
+distributed under the GNU LGPL. scripts/gen_bigrams.py regenerates the table
+from that file.
+
+Typing rhythm
+-------------
+
+js/src/typing/bigrams.ts and python/src/myuri/typing_engine/bigrams.py embed
+a table derived from english_bigrams.txt in John Burkardt's NGRAMS dataset
+(https://people.sc.fsu.edu/~jburkardt/datasets/ngrams/ngrams.html),
+distributed under the GNU LGPL. scripts/gen_bigrams.py regenerates the table
+from that file.

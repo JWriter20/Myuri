@@ -1,0 +1,164 @@
+"""Mouse-wheel scrolling: the counterpart of the trackpad model in ``scroll_model``.
+
+Python mirror of ``js/src/motion/wheel-model.ts`` (the source of truth; the
+draw order is identical, so a seed gives the same wheel in both languages).
+
+A trackpad reports a stream of small pixel deltas. A mouse wheel turns in
+notches: the finger rolls the wheel a few notches (a stroke), lifts, re-grips
+and rolls again. Two styles:
+
+- ``notched`` (Windows, Linux): one event per notch, each ``px_per_notch``
+  (default 100, which Camoufox turns into exactly one 3-line notch).
+- ``macos``: macOS reports the wheel in 20 ms frames and accelerates a fast
+  roll. A stroke starts at one line a frame and climbs to ~10, ``px_per_line``
+  (default 16) each.
+
+Fitted from a recorded notched USB mouse (Keychron M6) on macOS, Firefox, 1666
+wheel events; see the TypeScript module for the fits. The notch count of a
+``notched`` stroke (2-6) is a physical estimate: macOS hides individual notches
+inside its frames.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Callable, List
+
+from ..rng import gaussian
+from .scroll_model import ScrollEvent
+
+Rng = Callable[[], float]
+
+STROKE_MU = 5.215
+STROKE_SD = 0.552
+STROKE_MIN_MS = 60
+STROKE_MAX_MS = 450
+REGRIP_MU = 4.952
+REGRIP_SD = 0.563
+REGRIP_MIN_MS = 50
+REGRIP_MAX_MS = 600
+LONE_NOTCH_PROBABILITY = 0.33
+MIN_NOTCHES = 2
+MAX_NOTCHES = 6
+NOTCH_JITTER_MS = 3
+MIN_NOTCH_GAP_MS = 8
+
+MAC_FRAME_MS = 20
+MAC_DROPPED_FRAME_PROBABILITY = 0.1
+MAC_PEAK_MEAN = 10
+MAC_PEAK_SD = 1.6
+MAC_PEAK_MIN = 6
+MAC_PEAK_MAX = 13
+
+
+def _js_round(x: float) -> int:
+    return math.floor(x + 0.5)
+
+
+def _sign(x: float) -> int:
+    return (x > 0) - (x < 0)
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
+def _lognormal(rng: Rng, mu: float, sd: float) -> float:
+    return math.exp(gaussian(rng, mu, sd))
+
+
+def _min_jerk(tau: float) -> float:
+    return tau * tau * tau * (10 - 15 * tau + 6 * tau * tau)
+
+
+def _min_jerk_inverse(s: float) -> float:
+    lo, hi = 0.0, 1.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if _min_jerk(mid) < s:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def _stroke_sizes(total: int, rng: Rng) -> List[int]:
+    sizes: List[int] = []
+    left = total
+    while left > 0:
+        if rng() < LONE_NOTCH_PROBABILITY:
+            n = 1
+        else:
+            n = MIN_NOTCHES + math.floor(rng() * (MAX_NOTCHES - MIN_NOTCHES + 1))
+        sizes.append(min(n, left))
+        left -= sizes[-1]
+    return sizes
+
+
+def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEvent]:
+    sign = _sign(target)
+    total = max(1, _js_round(abs(target) / px_per_notch))
+    events: List[ScrollEvent] = []
+    for n in _stroke_sizes(total, rng):
+        duration = _clamp(_lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+        times = [duration * _min_jerk_inverse((i + 0.5) / n) for i in range(n)]
+        for i in range(n):
+            if i + 1 < n:
+                gap = max(MIN_NOTCH_GAP_MS, times[i + 1] - times[i] + gaussian(rng, 0, NOTCH_JITTER_MS))
+            else:
+                gap = _clamp(_lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+            events.append(ScrollEvent(delta_time=_js_round(gap), delta_y=sign * px_per_notch))
+    return events
+
+
+def _mac_path(target: float, rng: Rng, px_per_line: int) -> List[ScrollEvent]:
+    sign = _sign(target)
+    left = max(1, _js_round(abs(target) / px_per_line))
+    events: List[ScrollEvent] = []
+    while left > 0:
+        if rng() < LONE_NOTCH_PROBABILITY:
+            frames = 1
+        else:
+            duration = _clamp(_lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+            frames = max(2, _js_round(duration / MAC_FRAME_MS))
+        peak = _js_round(_clamp(gaussian(rng, MAC_PEAK_MEAN, MAC_PEAK_SD), MAC_PEAK_MIN, MAC_PEAK_MAX))
+        lines = 1
+        f = 0
+        while f < frames and left > 0:
+            if f > 0:
+                step = 5 if rng() < 0.2 else 1 + math.floor(rng() * 3)
+                lines = min(peak, lines + step)
+            sent = min(lines, left)
+            left -= sent
+            last = f + 1 == frames or left == 0
+            if last:
+                gap = _clamp(_lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+            else:
+                gap = 2 * MAC_FRAME_MS if rng() < MAC_DROPPED_FRAME_PROBABILITY else MAC_FRAME_MS
+            events.append(ScrollEvent(delta_time=_js_round(gap), delta_y=sign * sent * px_per_line))
+            f += 1
+    return events
+
+
+def generate_wheel_path(
+    desired_d: float,
+    rng: Rng,
+    style: str = "notched",
+    px_per_notch: int = 100,
+    px_per_line: int = 16,
+) -> List[ScrollEvent]:
+    """Plan a mouse-wheel scroll of about ``desired_d`` px.
+
+    A wheel moves in whole notches (or lines), so the sum is the nearest whole
+    number of them, at least one; read it back from the events. Each event's
+    ``delta_time`` is the wait after it. A request that rounds to 0 px
+    returns [].
+    """
+    if _js_round(desired_d) == 0:
+        return []
+    if style == "macos":
+        return _mac_path(desired_d, rng, px_per_line)
+    return _notched_path(desired_d, rng, px_per_notch)
+
+
+__all__ = ["generate_wheel_path"]

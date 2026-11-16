@@ -1,4 +1,4 @@
-"""Keyboard layout model with distance calculations and neighbor-key lookups.
+"""Keyboard layout model for neighbor-key typo lookups.
 
 Ported from HumanTyping (https://github.com/Lax3n/HumanTyping) via the
 TypeScript reference implementation (js/src/typing/keyboard.ts).
@@ -6,11 +6,8 @@ TypeScript reference implementation (js/src/typing/keyboard.ts).
 
 from __future__ import annotations
 
-import math
 import unicodedata
-from typing import Callable, Dict, List, Optional, Set, Tuple
-
-from .config import FAR_KEY_THRESHOLD
+from typing import Callable, Dict, List, Set, Tuple
 
 Rng = Callable[[], float]
 
@@ -76,18 +73,6 @@ class KeyboardLayout:
                 neighbors.append(self._grid[nr][nc])
 
         return neighbors
-
-    def get_distance(self, char1: str, char2: str) -> float:
-        norm1 = self._normalize_char(char1)
-        norm2 = self._normalize_char(char2)
-
-        pos1: Optional[Tuple[int, int]] = self._pos_map.get(norm1)
-        pos2: Optional[Tuple[int, int]] = self._pos_map.get(norm2)
-
-        if pos1 is None or pos2 is None:
-            return FAR_KEY_THRESHOLD
-
-        return math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
 
     def get_random_neighbor(self, char: str, rng: Rng) -> str:
         was_upper = char == char.upper() and char != char.lower()

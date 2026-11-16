@@ -1,4 +1,4 @@
-"""Word difficulty classification, common bigram/trigram detection.
+"""Word difficulty classification (common / normal / complex words).
 
 Ported from HumanTyping (https://github.com/Lax3n/HumanTyping) via the
 TypeScript reference implementation (js/src/typing/language.ts).
@@ -41,61 +41,6 @@ COMMON_WORDS = {
     'half', 'power', 'plan', 'week', 'today', 'true',
 }
 
-COMMON_BIGRAMS = {
-    'th', 'he', 'in', 'er', 'an', 're', 'on', 'at', 'en', 'nd',
-    'ti', 'es', 'or', 'te', 'of', 'ed', 'is', 'it', 'al', 'ar',
-    'st', 'to', 'nt', 'ng', 'se', 'ha', 'as', 'ou', 'io', 'le',
-    've', 'co', 'me', 'de', 'hi', 'ri', 'ro', 'ic', 'ne', 'ea',
-    'ra', 'ce', 'li', 'ch', 'll', 'be', 'ma', 'si', 'om', 'ur',
-    'us', 'el', 'no', 'di', 'ta', 'la', 'ge', 'wi', 'do', 'pe',
-    'wa', 'sh', 'lo', 'oo', 'mo', 'ca', 'tr', 'wh', 'ni', 'so',
-    'un', 'ai', 'ee', 'su', 'pr', 'fi', 'ho', 'uc', 'da', 'ac',
-    'ag', 'ab', 'ad', 'fo', 'nc', 'sa', 'ec', 'we', 'po', 'em',
-    'up', 'mi', 'ld', 'ie', 'op', 'rt', 'na', 'ia', 'lu', 'ow',
-    'bl', 'pa', 'pl', 'ot', 'ss', 'ry', 'sc', 'tu', 'ty', 'wo',
-    'id', 'am', 'ay', 'ir', 'iv', 'ke', 'ki', 'ly', 'ob', 'pi',
-    'pu', 'ut', 'vi', 'ct', 'ep', 'gu', 'il', 'im', 'oi', 'ul',
-    'um', 'gh', 'nk', 'ts', 'tt', 'bi', 'bu', 'ci', 'cl', 'cr',
-    'cu', 'ef', 'ev', 'ex', 'fl', 'fr', 'fu', 'gi', 'gr', 'ig',
-    'kn', 'mp', 'mu', 'oc', 'og', 'ok', 'ol', 'os', 'ov', 'pt',
-    'qu', 'rn', 'rs', 'ru', 'sl', 'sm', 'sn', 'sp', 'sw', 'ud',
-    'ug', 'va', 'wn', 'wr', 'ye', 'fe', 'ht', 'lt', 'pp', 'rr',
-    'sk', 'ub', 'ue', 'aw', 'dr', 'ds', 'du', 'ew', 'ey', 'ft',
-    'fy', 'ga', 'gl', 'go', 'gy', 'ip', 'ix', 'iz', 'lf', 'lk',
-    'ln', 'ls', 'mb', 'mm', 'mn', 'my', 'nf', 'nm', 'nn', 'ns',
-    'nu', 'ny', 'oa', 'od', 'oe', 'oh', 'oy', 'oz', 'ph', 'rb',
-    'rc', 'rd', 'rf', 'rg', 'rk', 'rl', 'rm', 'rp', 'rv', 'rw',
-    'sf', 'tl', 'tn', 'tw', 'uf', 'ui', 'uk', 'ys', 'ze', 'zo',
-    'ws',
-}
-
-COMMON_TRIGRAMS = {
-    'the', 'and', 'ing', 'her', 'hat', 'his', 'tha', 'ere', 'for', 'ent',
-    'ion', 'ter', 'was', 'you', 'ith', 'ver', 'all', 'wit', 'thi', 'tio',
-    'has', 'hou', 'hin', 'ght', 'one', 'our', 'out', 'rea', 'res', 'est',
-    'ome', 'ave', 'not', 'but', 'can', 'had', 'com', 'pro', 'per', 'int',
-    'pre', 'con', 'sta', 'str', 'ove', 'ear', 'ati', 'ess', 'ect', 'ons',
-    'men', 'ble', 'ted', 'nce', 'ine', 'age', 'ack', 'ful', 'ous', 'ive',
-    'rin', 'nde', 'nte', 'ill', 'ard', 'ist', 'ore', 'ame', 'ant', 'ort',
-    'hen', 'hav', 'rom', 'igh', 'ain', 'ong', 'oun', 'ven', 'ene', 'ell',
-    'ake', 'ide', 'lin', 'eed', 'ind', 'ose', 'uch', 'end', 'urn', 'ner',
-    'ire', 'ral', 'ate', 'ies', 'tin', 'ber', 'ple', 'ish', 'ity', 'ren',
-    'ure', 'ers', 'ade', 'ail', 'ald', 'ale', 'ane', 'ape', 'are', 'ark',
-    'arm', 'art', 'ase', 'ast', 'eat', 'eel', 'een', 'eer', 'ern', 'ick',
-    'ife', 'ild', 'ilt', 'ink', 'iss', 'ite', 'ize', 'ock', 'old', 'ole',
-    'oll', 'ook', 'ool', 'oom', 'oon', 'oor', 'oot', 'ope', 'ork', 'orm',
-    'orn', 'oss', 'ost', 'ote', 'oth', 'own', 'ual', 'uce', 'ude', 'uge',
-    'ule', 'ull', 'ult', 'umb', 'ump', 'und', 'ung', 'unk', 'unt', 'urt',
-    'use', 'ust', 'ute', 'act', 'aft', 'alk', 'amp', 'ang', 'ank', 'apt',
-    'ash', 'ask', 'asp', 'ath', 'awn', 'ban', 'bed', 'ben', 'bet', 'bid',
-    'bin', 'bit', 'bla', 'bor', 'bou', 'bre', 'bri', 'bro', 'cal', 'car',
-    'cas', 'cat', 'cer', 'cha', 'che', 'chi', 'cla', 'cle', 'cli', 'clo',
-    'col', 'cou', 'cre', 'cri', 'cro', 'dal', 'dan', 'dar', 'den', 'der',
-    'din', 'dis', 'dom', 'dou', 'dra', 'dri', 'dro', 'duc', 'dul', 'ead',
-    'eal', 'eam', 'ean', 'eas', 'ede', 'edi', 'eet', 'eft', 'eld', 'ele',
-    'elf',
-}
-
 _PUNCTUATION_CHARS = set(".,!?;:'\"-()[]{}/")
 
 _COMPLEX_CHARS = set("zxqj")
@@ -125,10 +70,3 @@ def get_word_difficulty(word: str) -> str:
         return 'complex'
     return 'normal'
 
-
-def is_common_bigram(char1: str, char2: str) -> bool:
-    return (char1 + char2).lower() in COMMON_BIGRAMS
-
-
-def is_common_trigram(char1: str, char2: str, char3: str) -> bool:
-    return (char1 + char2 + char3).lower() in COMMON_TRIGRAMS

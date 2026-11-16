@@ -139,9 +139,11 @@ describe('Cursor (headless integration)', () => {
     const { driver, calls } = makeFakeDriver()
     const cursor = createCursor({ driver, seed: 3, settings: { typing: { mistakeMultiplier: 0 } } })
     await cursor.type('hi', '#target')
-    const pressed = calls.filter((c) => c.op === 'press').map((c) => c.args[0])
+    const pressed = calls.filter((c) => c.op === 'down').map((c) => c.args[0])
     expect(pressed).toContain('h')
     expect(pressed).toContain('i')
+    // Every key that went down came back up.
+    expect(calls.filter((c) => c.op === 'up').map((c) => c.args[0]).sort()).toEqual([...pressed].sort())
   })
 
   /**
@@ -169,9 +171,9 @@ describe('Cursor (headless integration)', () => {
         }
         return fake.driver.evaluate(fn, arg)
       },
-      async press(key, options) {
+      async down(key) {
         if (key === 'Backspace') value = ''
-        return fake.driver.press(key, options)
+        return fake.driver.down(key)
       },
     }
     return { driver, calls: fake.calls }
@@ -187,7 +189,7 @@ describe('Cursor (headless integration)', () => {
     // The focusing click is click 1; clicks 2 and 3 complete the triple-click.
     expect(clickCounts(calls)).toEqual([1, 2, 3])
     expect(calls.filter((c) => c.op === 'down' && ['Control', 'Meta'].includes(c.args[0] as string))).toEqual([])
-    expect(calls.some((c) => c.op === 'press' && c.args[0] === 'Backspace')).toBe(true)
+    expect(calls.some((c) => c.op === 'down' && c.args[0] === 'Backspace')).toBe(true)
   })
 
   it('clearExisting leaves an empty field alone', async () => {
@@ -246,6 +248,21 @@ describe('Cursor (headless integration)', () => {
     const plannedDistance = planned.reduce((sum, e) => sum + e.deltaY, 0)
     const sentDistance = first.reduce((sum, w) => sum + w.deltaY, 0)
     expect(Math.abs(sentDistance - plannedDistance)).toBeLessThanOrEqual(1)
+  })
+
+  it('scroll with device mouse sends one wheel call per notch', async () => {
+    const fake = makeFakeDriver({ x: 100, y: 1500, width: 200, height: 50 })
+    const sent: number[] = []
+    const driver: Driver = {
+      ...fake.driver,
+      async wheel(_deltaX, deltaY) {
+        sent.push(deltaY)
+      },
+    }
+    const cursor = createCursor({ driver, seed: 8, settings: { scroll: { device: 'mouse' } } })
+    await cursor.scroll('#target', { maxTries: 1 })
+    expect(sent.length).toBeGreaterThan(0)
+    for (const d of sent) expect(Math.abs(d)).toBe(100)
   })
 
   it('is deterministic: same seed -> same landing point', async () => {

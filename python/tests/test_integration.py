@@ -31,6 +31,8 @@ class FakeDriver(Driver):
 
     async def down(self, key):
         self.calls.append(("down", key))
+        if key == "Backspace":
+            self.field_text = ""
 
     async def up(self, key):
         self.calls.append(("up", key))
@@ -40,8 +42,6 @@ class FakeDriver(Driver):
 
     async def press(self, key, delay=None):
         self.calls.append(("press", key))
-        if key == "Backspace":
-            self.field_text = ""
 
     async def evaluate(self, js, arg=None):
         if "visualLines" in js:  # focused field (clear_existing)
@@ -107,8 +107,10 @@ async def test_type_clicks_then_presses():
     d = FakeDriver()
     cursor = Cursor(d, seed=3, settings={"typing": {"mistake_multiplier": 0}})
     await cursor.type("hi", "#target")
-    pressed = [c[1] for c in d.calls if c[0] == "press"]
+    pressed = [c[1] for c in d.calls if c[0] == "down"]
     assert "h" in pressed and "i" in pressed
+    # Every key that went down came back up.
+    assert sorted(c[1] for c in d.calls if c[0] == "up") == sorted(pressed)
 
 
 @pytest.mark.asyncio
@@ -119,7 +121,7 @@ async def test_clear_existing_triple_clicks_without_modifier_keys():
     # The focusing click is click 1; clicks 2 and 3 complete the triple-click.
     assert [c[2] for c in d.calls if c[0] == "click"] == [1, 2, 3]
     assert not [c for c in d.calls if c[0] == "down" and c[1] in ("Control", "Meta")]
-    assert ("press", "Backspace") in d.calls
+    assert ("down", "Backspace") in d.calls
 
 
 @pytest.mark.asyncio

@@ -3,16 +3,12 @@
 Ported from HumanTyping (https://github.com/Lax3n/HumanTyping) via the
 TypeScript reference implementation (js/src/typing/markov.ts).
 
-Models realistic human typing with:
-- Variable speed based on word complexity and key distance
+Decides WHAT a person types on the way to the target text:
 - Neighbor-key errors and character swap errors
 - Probabilistic error detection and backspace correction
-- Fatigue over longer texts
-- Natural pauses at word boundaries
 
-The engine is driver-agnostic: it produces a stream of structured
-``TypingEvent``s that a consumer (see ``HumanTyper``) replays against some
-input surface. It never touches a browser or the DOM.
+It has no notion of time: ``timing.py`` schedules the resulting keys. The
+engine is driver-agnostic and never touches a browser or the DOM.
 """
 
 from __future__ import annotations
@@ -20,44 +16,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
-from ..rng import gaussian
 from .config import (
-    AVG_WORD_LENGTH,
-    CLOSE_KEY_THRESHOLD,
     COMMON_WORD_ERROR_MULT,
     COMPLEX_WORD_ERROR_MULT,
     COMPOSED_ACCENT_ERROR_MULT,
-    DEFAULT_WPM,
     DRIFT_CORRECTION_PROB,
-    FAR_KEY_PENALTY,
-    FAR_KEY_THRESHOLD,
-    FATIGUE_CAP,
-    FATIGUE_FACTOR,
-    MIN_BACKSPACE_TIME,
-    MIN_KEYSTROKE_TIME,
-    MIN_REACTION_TIME,
-    MIN_SPEED_MULTIPLIER,
     PROB_ERROR,
     PROB_NOTICE_ERROR,
     PROB_SWAP_ERROR,
-    SPEED_BOOST_BIGRAM,
-    SPEED_BOOST_CLOSE_KEYS,
-    SPEED_BOOST_COMMON_WORD,
-    SPEED_BOOST_SPACE,
-    SPEED_BOOST_TRIGRAM,
-    SPEED_PENALTY_COMPLEX_WORD,
-    TIME_BACKSPACE_MEAN,
-    TIME_BACKSPACE_STD,
-    TIME_COMPOSED_ACCENT_PENALTY,
-    TIME_DIRECT_ACCENT_PENALTY,
-    TIME_KEYSTROKE_STD,
-    TIME_REACTION_MEAN,
-    TIME_REACTION_STD,
-    TIME_UPPERCASE_PENALTY,
-    WPM_STD,
 )
 from .keyboard import KeyboardLayout
-from .language import get_word_difficulty, is_common_bigram, is_common_trigram
+from .language import get_word_difficulty
 
 Rng = Callable[[], float]
 
@@ -67,15 +36,12 @@ class TypingEvent:
     """A single modeled typing action.
 
     ``chars`` holds the literal code point(s) produced (empty for a
-    backspace); ``dt_ms`` is the time to wait for this action, in
-    milliseconds (already inclusive of any reaction pause). Consumers
-    dispatch on ``kind`` ('type' | 'error' | 'swap' | 'backspace' |
+    backspace; two for a swap). Consumers dispatch on ``kind`` ('type' | 'error' | 'swap' | 'backspace' |
     'correct') — no string parsing required.
     """
 
     kind: str
     chars: str
-    dt_ms: float
 
 
 # Word-boundary code points that trigger a strict correction check.
@@ -85,17 +51,13 @@ WORD_BOUNDARY_CHARS = " \n\t.,;!?:()[]{}<>\"'"
 @dataclass
 class _TypingState:
     current_text: List[str] = field(default_factory=list)  # typed code points so far
-    total_time: float = 0.0  # seconds
     history: List[TypingEvent] = field(default_factory=list)
-    last_char_typed: Optional[str] = None
     last_kind: Optional[str] = None
-    fatigue_multiplier: float = 1.0
     mental_cursor_pos: int = 0  # index into target_chars (code points)
 
 
 @dataclass
 class MarkovRunResult:
-    total_time: float
     history: List[TypingEvent]
 
 
@@ -103,18 +65,11 @@ class MarkovTyper:
     def __init__(
         self,
         target_text: str,
-        target_wpm: float = DEFAULT_WPM,
         mistake_multiplier: float = 1.0,
         rng: Optional[Rng] = None,
-        # Pre-resolved per-session WPM. When provided (e.g. sampled once by the
-        # HumanTyper so every field shares one speed), it is used directly
-        # instead of drawing a fresh N(target_wpm, WPM_STD) sample per instance.
-        session_wpm: Optional[float] = None,
     ) -> None:
         if not target_text:
             raise ValueError("target_text must be a non-empty string")
-        if target_wpm <= 0:
-            raise ValueError("target_wpm must be a positive number")
         if rng is None:
             raise ValueError("rng is required")
 
@@ -126,13 +81,6 @@ class MarkovTyper:
         self._keyboard = KeyboardLayout()
         self._mistake_multiplier = mistake_multiplier
         self._rng: Rng = rng
-
-        resolved_wpm = (
-            max(10.0, session_wpm)
-            if session_wpm is not None
-            else max(10.0, gaussian(self._rng, target_wpm, WPM_STD))
-        )
-        self._base_keystroke_time = 60.0 / (resolved_wpm * AVG_WORD_LENGTH)
 
         self._state = self._fresh_state()
 
@@ -159,103 +107,15 @@ class MarkovTyper:
 
         return "".join(self._target_chars[start:end])
 
-    def _calculate_keystroke_time(self, char_to_type: str) -> float:
-        keystroke_time = self._base_keystroke_time * self._state.fatigue_multiplier
-
-        current_word = self._get_current_word_context()
-        if current_word:
-            difficulty = get_word_difficulty(current_word)
-            if difficulty == "common":
-                keystroke_time *= SPEED_BOOST_COMMON_WORD
-            elif difficulty == "complex":
-                keystroke_time *= SPEED_PENALTY_COMPLEX_WORD
-
-        if self._state.last_char_typed:
-            sequence_boost = False
-            length = len(self._state.current_text)
-
-            # Trigram boost (strongest — we're mid-flow in a common sequence)
-            if length >= 2:
-                c1 = self._state.current_text[length - 2]
-                c2 = self._state.current_text[length - 1]
-                if is_common_trigram(c1, c2, char_to_type):
-                    keystroke_time *= SPEED_BOOST_TRIGRAM
-                    sequence_boost = True
-
-            # Bigram boost
-            if not sequence_boost and is_common_bigram(
-                self._state.last_char_typed, char_to_type
-            ):
-                keystroke_time *= SPEED_BOOST_BIGRAM
-                sequence_boost = True
-
-            # Fall back to distance-based adjustments
-            if not sequence_boost:
-                dist = self._keyboard.get_distance(
-                    self._state.last_char_typed, char_to_type
-                )
-                if 0 < dist < CLOSE_KEY_THRESHOLD:
-                    keystroke_time *= SPEED_BOOST_CLOSE_KEYS
-                elif dist > FAR_KEY_THRESHOLD:
-                    keystroke_time *= FAR_KEY_PENALTY
-
-        if char_to_type == " ":
-            keystroke_time *= SPEED_BOOST_SPACE  # Space is fast — thumb key, always hovering
-        elif self._keyboard.is_composed_accent(char_to_type):
-            keystroke_time += TIME_COMPOSED_ACCENT_PENALTY
-        elif self._keyboard.is_direct_accent(char_to_type):
-            keystroke_time += TIME_DIRECT_ACCENT_PENALTY
-        elif char_to_type != char_to_type.lower():
-            keystroke_time += TIME_UPPERCASE_PENALTY
-
-        # Apply floor to prevent unrealistic stacking of boosts
-        keystroke_time = max(
-            MIN_SPEED_MULTIPLIER * self._base_keystroke_time, keystroke_time
-        )
-
-        dt = gaussian(self._rng, keystroke_time, TIME_KEYSTROKE_STD)
-        return max(MIN_KEYSTROKE_TIME, dt)
-
-    def _bump_fatigue(self) -> None:
-        self._state.fatigue_multiplier = min(
-            FATIGUE_CAP, self._state.fatigue_multiplier * FATIGUE_FACTOR
-        )
-
-    def _keystroke_dt(self, char: str, literal: bool) -> float:
-        """Time (seconds) for a single keystroke.
-
-        ``literal`` keys (code points not on the layout) use the plain base
-        timing — no bigram/distance/accent modeling.
-        """
-        if literal:
-            base = self._base_keystroke_time * self._state.fatigue_multiplier
-            return max(
-                MIN_KEYSTROKE_TIME, gaussian(self._rng, base, TIME_KEYSTROKE_STD)
-            )
-        return self._calculate_keystroke_time(char)
-
-    def _advance_char(self, char: str, literal: bool) -> float:
-        """Advance the simulation by one typed code point.
-
-        Bumps fatigue, samples the keystroke time, appends the char, and
-        moves the mental cursor. Returns the sampled dt in seconds. Shared by
-        every keystroke path so fatigue is applied exactly once per emitted
-        character (including inside swaps).
-        """
-        self._bump_fatigue()
-        dt = self._keystroke_dt(char, literal)
-        self._state.total_time += dt
+    def _advance_char(self, char: str) -> None:
+        """Append a typed code point and move the mental cursor."""
         self._state.current_text.append(char)
-        self._state.last_char_typed = char
         self._state.mental_cursor_pos += 1
-        return dt
 
-    def _emit_keystroke(
-        self, char: str, kind: str, literal: bool = False
-    ) -> TypingEvent:
+    def _emit_keystroke(self, char: str, kind: str) -> TypingEvent:
         """Emit a single-keystroke event (type / error / correct)."""
-        dt = self._advance_char(char, literal)
-        event = TypingEvent(kind=kind, chars=char, dt_ms=dt * 1000)
+        self._advance_char(char)
+        event = TypingEvent(kind=kind, chars=char)
         self._state.history.append(event)
         self._state.last_kind = kind
         return event
@@ -313,23 +173,9 @@ class MarkovTyper:
                         should_correct = True
 
             if should_correct:
-                dt_total = 0.0
-                # Reaction time (only if we weren't already backspacing)
-                if not was_backspacing:
-                    dt_total += max(
-                        MIN_REACTION_TIME,
-                        gaussian(self._rng, TIME_REACTION_MEAN, TIME_REACTION_STD),
-                    )
-
-                # Perform Backspace
-                dt_total += max(
-                    MIN_BACKSPACE_TIME,
-                    gaussian(self._rng, TIME_BACKSPACE_MEAN, TIME_BACKSPACE_STD),
-                )
-                self._state.total_time += dt_total
                 self._state.current_text.pop()
 
-                event = TypingEvent(kind="backspace", chars="", dt_ms=dt_total * 1000)
+                event = TypingEvent(kind="backspace", chars="")
                 self._state.history.append(event)
                 self._state.last_kind = "backspace"
 
@@ -350,7 +196,7 @@ class MarkovTyper:
 
         # If the character is not on our keyboard, type it literally (no error modeling)
         if not self._keyboard.has_key(char_intended) and char_intended != " ":
-            return self._emit_keystroke(char_intended, "type", literal=True)
+            return self._emit_keystroke(char_intended, "type")
 
         # Swap Error (Anticipation): e.g. "the" -> "hte"
         if len(self._target_chars) > self._state.mental_cursor_pos + 1:
@@ -359,13 +205,9 @@ class MarkovTyper:
                 if self._rng() < min(
                     1.0, PROB_SWAP_ERROR * self._mistake_multiplier
                 ):
-                    dt1 = self._advance_char(char_after, False)
-                    dt2 = self._advance_char(char_intended, False)
-                    event = TypingEvent(
-                        kind="swap",
-                        chars=char_after + char_intended,
-                        dt_ms=(dt1 + dt2) * 1000,
-                    )
+                    self._advance_char(char_after)
+                    self._advance_char(char_intended)
+                    event = TypingEvent(kind="swap", chars=char_after + char_intended)
                     self._state.history.append(event)
                     self._state.last_kind = "swap"
                     return event
@@ -408,8 +250,7 @@ class MarkovTyper:
         """
         self._state = self._fresh_state()
         for char in self._target_chars:
-            literal = not self._keyboard.has_key(char) and char != " "
-            self._emit_keystroke(char, "correct", literal)
+            self._emit_keystroke(char, "correct")
 
     def run(self) -> MarkovRunResult:
         budget = len(self._target_chars) * 10
@@ -423,6 +264,4 @@ class MarkovTyper:
         if not self._is_complete():
             self._emit_correct_typing()
 
-        return MarkovRunResult(
-            total_time=self._state.total_time, history=self._state.history
-        )
+        return MarkovRunResult(history=self._state.history)

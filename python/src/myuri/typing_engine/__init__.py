@@ -9,21 +9,27 @@ from __future__ import annotations
 
 from .config import DEFAULT_WPM, WPM_STD
 from .keyboard import KeyboardLayout
-from .language import get_word_difficulty, is_common_bigram, is_common_trigram
+from .language import get_word_difficulty
 from .markov import MarkovRunResult, MarkovTyper, TypingEvent
-from .typer import HumanTyper, TyperInput, char_to_key
+from .timing import KeyAction, KeystrokeTiming, Stroke, needs_shift, strokes_for_text
+from .typer import HumanTyper, TyperInput, TypingClock, char_to_key, real_clock
 
 __all__ = [
     "DEFAULT_WPM",
     "WPM_STD",
     "KeyboardLayout",
     "get_word_difficulty",
-    "is_common_bigram",
-    "is_common_trigram",
     "MarkovRunResult",
     "MarkovTyper",
     "TypingEvent",
     "HumanTyper",
     "TyperInput",
+    "TypingClock",
     "char_to_key",
+    "real_clock",
+    "KeyAction",
+    "KeystrokeTiming",
+    "Stroke",
+    "needs_shift",
+    "strokes_for_text",
 ]
