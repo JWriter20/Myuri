@@ -1,5 +1,3 @@
-<p align="center"><img src="docs/media/myuri.png" width="160" alt="myuri"></p>
-
 # myuri
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
