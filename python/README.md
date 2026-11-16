@@ -29,6 +29,7 @@ async with async_playwright() as p:
     await cursor.click("#username")
     await cursor.type("hello@example.com")
     await cursor.scroll("#footer")
+    await cursor.drag("#card", "#bin")      # selectors or Vector points
     await cursor.dispose()
 ```
 

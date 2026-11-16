@@ -1,6 +1,6 @@
 import { type Vector, overshoot as overshootPoint } from './math.js'
 import { type Rng, makeRng, generateRandomSeed } from './rng.js'
-import { type Driver, type ResolvedDriver, defineDriver } from './drivers/types.js'
+import { type Driver, type MouseButton, type ResolvedDriver, defineDriver } from './drivers/types.js'
 import { driverFromPage } from './drivers/index.js'
 import { resolveSettings, type MyuriSettings, type DeepPartial } from './settings.js'
 import { generateProfile } from './profile.js'
@@ -21,11 +21,13 @@ import {
 } from './geometry.js'
 import { scrollModel } from './motion/scroll-model.js'
 import { generateWheelPath } from './motion/wheel-model.js'
+import { clickHoldMs, dragCarrySpeed, dragEndMs, dragStartMs, multiClickGapMs, preClickDwellMs } from './motion/click-model.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type { BoundingBox } from './math.js'
 import type {
   MoveOptions,
   ClickOptions,
+  DragOptions,
   MoveToOptions,
   ScrollOptions,
   TypeOptions,
@@ -48,6 +50,14 @@ interface FocusedField {
   selection: 'all' | 'partial'
   /** Paragraph count; triple-click selects one paragraph at a time. */
   lines: number
+  /** An <input>: triple-click selects it all wherever it lands. */
+  singleLine: boolean
+  /**
+   * The first line's text span (x from..to, y band), in top-page coordinates.
+   * Firefox selects nothing when a triple-click in a textarea or editor lands
+   * in the blank space after the text.
+   */
+  firstLineSpan: { left: number; right: number; top: number; bottom: number }
   /** Rendered line count (wrapped paragraphs span several). */
   visualLines: number
   scrollTop: number
@@ -99,6 +109,16 @@ const focusedField = (): FocusedField | null => {
     x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + 6,
     y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop + lineHeight / 2,
   }
+  const contentLeft = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft)
+  const lineTop = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop
+  let span = { left: contentLeft, right: contentLeft, top: lineTop, bottom: lineTop + lineHeight }
+  if (el.tagName === 'TEXTAREA') {
+    const ctx = doc.createElement('canvas').getContext('2d')
+    if (ctx) {
+      ctx.font = cs.font
+      span.right = contentLeft + ctx.measureText(text.split('\n')[0]).width
+    }
+  }
   let selection: 'all' | 'partial'
   if (isTextControl) {
     // email/number inputs expose no selection range; they are single-line,
@@ -119,6 +139,9 @@ const focusedField = (): FocusedField | null => {
       range.setEnd(n, i + 1)
       const c = range.getBoundingClientRect()
       firstLine = { x: c.left + c.width / 2 + 4, y: c.top + c.height / 2 }
+      range.setEnd(n, (n.textContent ?? '').length)
+      const line = range.getClientRects()[0] ?? c
+      span = { left: c.left, right: line.right, top: line.top, bottom: line.bottom }
       break
     }
   }
@@ -127,6 +150,8 @@ const focusedField = (): FocusedField | null => {
     empty: text.trim() === '',
     selection,
     lines: text === '' ? 1 : text.split('\n').length,
+    singleLine: el.tagName === 'INPUT',
+    firstLineSpan: { left: span.left + ox, right: span.right + ox, top: span.top + oy, bottom: span.bottom + oy },
     visualLines: Math.ceil(el.scrollHeight / lineHeight),
     scrollTop: el.scrollTop,
     firstLine: { x: firstLine.x + ox, y: firstLine.y + oy },
@@ -194,6 +219,8 @@ export class Cursor {
   private typer: HumanTyper
 
   private previous: Vector
+  /** `Date.now()` of the last mouse move, for the pause before a press. */
+  private lastMoveAt = 0
   private isMoving = false
   private performingRandomMoves = false
   private randomMoveTimer: ReturnType<typeof setTimeout> | null = null
@@ -329,6 +356,17 @@ export class Cursor {
 
   // ---- primitive motion ---------------------------------------------------
 
+  /**
+   * Press and release a button where the cursor is, timed like a person: the
+   * first click of a gesture waits a drawn beat after the last move, and the
+   * button is held for a drawn time (see `motion/click-model.ts`).
+   */
+  private async press(button: MouseButton, clickCount: number, holdMs?: number): Promise<void> {
+    if (clickCount === 1) await delay(this.lastMoveAt + preClickDwellMs(this.rng) - Date.now())
+    const drawn = clickHoldMs(this.rng)
+    await this.driver.click(button, clickCount, holdMs ?? drawn)
+  }
+
   private async tracePath(vectors: ReturnType<typeof path>): Promise<void> {
     if (vectors.length === 0) return
     const vp = await viewportOf(this.driver)
@@ -342,6 +380,7 @@ export class Cursor {
       const t0 = Date.now()
       await this.driver.move(pos.x, pos.y)
       this.previous = pos
+      this.lastMoveAt = Date.now()
       // Subtract dispatch latency so per-point cadence matches the fitted model.
       await delay(targetDelta - (Date.now() - t0))
     }
@@ -475,6 +514,61 @@ export class Cursor {
     if (lastError) throw lastError
   }
 
+  /**
+   * Press on `from`, move to `to` with the button held, and release, timed
+   * like recorded people (see `motion/click-model.ts`). Each end is a selector
+   * (a point inside the element is chosen, as for `click`) or a viewport point.
+   * `to` is measured after the press, so a drop zone that appears once a drag
+   * starts works. Needs a driver with `mouseDown`/`mouseUp` (all built-in
+   * drivers have them). HTML5 drag-and-drop works where the driver supports
+   * it (Playwright does).
+   */
+  async drag(from: string | Vector, to: string | Vector, options?: DragOptions): Promise<void> {
+    const opts: DragOptions = {
+      button: 'left',
+      waitForRelease: 50,
+      widthPaddingPercentage: 25,
+      heightPaddingPercentage: 70,
+      waitForSelector: 10000,
+      maxTries: 3,
+      overshootThreshold: this.settings.overshoot.threshold,
+      moveSpeed: 1,
+      ...this.defaults.move,
+      ...options,
+    }
+    const button = opts.button ?? 'left'
+    const wasRandom = this.startAction()
+    try {
+      if (typeof from === 'string') await this.moveToElement(from, { ...opts, moveDelay: 0, randomizeMoveDelay: false })
+      else await this.moveAlong(from, opts, false)
+      await delay(this.lastMoveAt + preClickDwellMs(this.rng) - Date.now())
+      await this.driver.mouseDown(button)
+      let released = false
+      try {
+        await delay(dragStartMs(this.rng))
+        let target: Vector
+        if (typeof to === 'string') {
+          const box = await boundingBoxOf(this.driver, to)
+          if (!box) throw new Error(`myuri: drag target not found or not visible: ${to}`)
+          target = getRandomBoxPoint(box, opts, this.previous, [], this.rng)
+        } else {
+          target = to
+        }
+        // Carrying something, people move slower and steer straight to the drop: no overshoot.
+        const moveSpeed = (opts.moveSpeed ?? 1) * dragCarrySpeed(this.rng)
+        await this.moveAlong(target, { ...opts, moveSpeed }, false)
+        await delay(this.lastMoveAt + dragEndMs(this.rng) - Date.now())
+        released = true
+        await this.driver.mouseUp(button)
+      } finally {
+        if (!released) await this.driver.mouseUp(button).catch(() => {})
+      }
+      await delay(opts.waitForRelease ?? 50)
+    } finally {
+      await this.endAction(wasRandom, { moveDelay: 0, randomizeMoveDelay: false })
+    }
+  }
+
   /** Click an element (moving to it first) or click at the current position. */
   async click(selector?: string, options?: ClickOptions): Promise<void> {
     const opts: ClickOptions = {
@@ -517,7 +611,11 @@ export class Cursor {
           await delay(15 + this.rng() * 10)
         }
       }
-      await this.driver.click(opts.button)
+      const count = Math.max(1, Math.min(3, Math.round(opts.clickCount ?? 1)))
+      for (let clickCount = 1; clickCount <= count; clickCount++) {
+        if (clickCount > 1) await delay(multiClickGapMs(this.rng))
+        await this.press(opts.button ?? 'left', clickCount, opts.holdMs)
+      }
       await delay(Math.max(opts.waitForClick ?? 0, 15))
     } finally {
       await this.endAction(wasRandom, opts)
@@ -545,9 +643,15 @@ export class Cursor {
         focusClicked = false
       }
       let firstClick = focusClicked ? 2 : 1
-      if (field.lines > 1) {
+      const s = field.firstLineSpan
+      const onFirstLine =
+        s == null ||
+        (this.previous.x >= s.left && this.previous.x <= s.right - 2 && this.previous.y >= s.top && this.previous.y <= s.bottom)
+      if (field.lines > 1 || (field.singleLine === false && !onFirstLine)) {
         // Triple-click selects one paragraph, so start on the first one: wheel
-        // the field back to its top if needed, then triple-click there.
+        // the field back to its top if needed, then triple-click there. One
+        // line in a textarea or editor needs it too unless the cursor is
+        // already on the text (see firstLineSpan).
         for (let i = 0; i < 30 && field.scrollTop > 0; i++) {
           await this.driver.wheel(0, -Math.min(field.scrollTop, 80 + this.rng() * 80))
           await delay(30 + this.rng() * 40)
@@ -558,8 +662,8 @@ export class Cursor {
         firstClick = 1
       }
       for (let clickCount = firstClick; clickCount <= 3; clickCount++) {
-        if (clickCount > 1) await delay(70 + this.rng() * 90)
-        await this.driver.click('left', clickCount)
+        if (clickCount > 1) await delay(multiClickGapMs(this.rng))
+        await this.press('left', clickCount)
       }
       if (field.lines > 1) {
         await delay(120 + this.rng() * 120)

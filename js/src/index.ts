@@ -48,6 +48,7 @@ export type {
   PathOptions,
   MoveOptions,
   ClickOptions,
+  DragOptions,
   MoveToOptions,
   ScrollOptions,
   TypeOptions,
@@ -58,3 +59,4 @@ export type {
 export { HumanTyper, realClock, type TyperInput, type HumanTyperOptions, type TypingClock } from './typing/typer.js'
 export { KeystrokeTiming, strokesForText, needsShift, type Stroke, type KeyAction } from './typing/timing.js'
 export { generateWheelPath, type WheelStyle, type WheelOptions } from './motion/wheel-model.js'
+export { clickHoldMs, preClickDwellMs, multiClickGapMs, dragStartMs, dragEndMs, dragCarrySpeed } from './motion/click-model.js'

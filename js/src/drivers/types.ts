@@ -34,9 +34,12 @@ export interface Driver {
   /**
    * Press-and-release the mouse at its current position. `clickCount` is the
    * click's place in a multi-click (2 and 3 continue a double/triple click,
-   * which browsers use to select a word/line). Defaults to 1.
+   * which browsers use to select a word/line). Defaults to 1. `holdMs` is
+   * how long to hold the button between down and up; the cursor draws one per
+   * click from recorded people (see `motion/click-model.ts`). A driver that
+   * ignores it holds for its own fixed time.
    */
-  click(button?: MouseButton, clickCount?: number): Promise<void>
+  click(button?: MouseButton, clickCount?: number, holdMs?: number): Promise<void>
   /** Press a modifier/key down (no release). */
   down(key: string): Promise<void>
   /** Release a previously held key. */
@@ -57,6 +60,10 @@ export interface Driver {
   setClipboard?(text: string): Promise<void>
   /** Whether the page/target is gone. Defaults to always-open. */
   isClosed?(): boolean
+  /** Press a mouse button without releasing it (for drags). No default: `drag` needs it. */
+  mouseDown?(button?: MouseButton): Promise<void>
+  /** Release a button pressed with `mouseDown`. */
+  mouseUp?(button?: MouseButton): Promise<void>
   /** Release backend resources (e.g. detach a CDP session). Defaults to no-op. */
   dispose?(): Promise<void>
 }
@@ -80,6 +87,12 @@ export type { BoundingBox, ViewportSize }
  * are implemented in terms of `evaluate`/`press` so a minimal driver only needs
  * the input primitives plus `evaluate`.
  */
+function missing(name: string): () => Promise<void> {
+  return async () => {
+    throw new Error(`myuri: this driver has no ${name}(), which drag needs`)
+  }
+}
+
 export function defineDriver(driver: Driver): ResolvedDriver {
   const setClipboard =
     driver.setClipboard?.bind(driver) ??
@@ -144,6 +157,8 @@ export function defineDriver(driver: Driver): ResolvedDriver {
     insertText,
     setClipboard,
     isClosed: driver.isClosed?.bind(driver) ?? (() => false),
+    mouseDown: driver.mouseDown?.bind(driver) ?? missing('mouseDown'),
+    mouseUp: driver.mouseUp?.bind(driver) ?? missing('mouseUp'),
     dispose: driver.dispose?.bind(driver) ?? (async () => {}),
   }
 }

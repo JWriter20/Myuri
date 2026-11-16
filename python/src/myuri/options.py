@@ -63,12 +63,26 @@ class ClickOptions(MoveOptions):
     """Options for clicking an element (extends :class:`MoveOptions`)."""
 
     button: Optional[MouseButton] = None
+    click_count: Optional[int] = None
+    """2 for a double click, 3 for a triple click. Default 1."""
+    hold_ms: Optional[float] = None
+    """ms to hold the button down (each click of a multi-click). Default: drawn
+    per click from recorded people (median ~97 ms). Set it for a long press."""
     wait_for_click: Optional[float] = None
-    """ms to hold the button."""
+    """ms to wait after the click before the next action."""
     micro_jitter: Optional[bool] = None
     """Nudge 1px right before clicking."""
     dynamic_adjustment: Optional[bool] = None
     """Re-check the target box just before clicking and correct if it moved."""
+
+
+@dataclass
+class DragOptions(MoveOptions):
+    """Options for dragging (extends :class:`MoveOptions`)."""
+
+    button: Optional[MouseButton] = None
+    wait_for_release: Optional[float] = None
+    """ms to wait after releasing before the next action. Default 50."""
 
 
 @dataclass

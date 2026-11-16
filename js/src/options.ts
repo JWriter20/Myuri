@@ -35,12 +35,25 @@ export interface MoveOptions extends BoxOptions, PathOptions {
 
 export interface ClickOptions extends MoveOptions {
   button?: 'left' | 'right' | 'middle'
-  /** ms to hold the button. */
+  /** 2 for a double click, 3 for a triple click. Default 1. */
+  clickCount?: number
+  /**
+   * ms to hold the button down (each click of a multi-click). Default: drawn
+   * per click from recorded people (median ~97 ms). Set it for a long press.
+   */
+  holdMs?: number
+  /** ms to wait after the click before the next action. */
   waitForClick?: number
   /** Nudge 1px right before clicking. */
   microJitter?: boolean
   /** Re-check the target box just before clicking and correct if it moved. */
   dynamicAdjustment?: boolean
+}
+
+export interface DragOptions extends MoveOptions {
+  button?: 'left' | 'right' | 'middle'
+  /** ms to wait after releasing before the next action. Default 50. */
+  waitForRelease?: number
 }
 
 export interface MoveToOptions extends PathOptions {
