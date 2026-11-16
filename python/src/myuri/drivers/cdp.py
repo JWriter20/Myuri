@@ -11,7 +11,9 @@ from typing import Any, Optional
 
 from .base import Driver
 
-_CLICK_HOLD_S = 0.045
+# Hold when the caller gives none; the cursor passes one drawn per click.
+_CLICK_HOLD_S = 0.095
+_BUTTON_BITS = {"left": 1, "right": 2, "middle": 4}
 
 
 class CdpDriver(Driver):
@@ -20,6 +22,8 @@ class CdpDriver(Driver):
         self._session: Any = None
         self._x = 0.0
         self._y = 0.0
+        # The button a drag holds; CDP moves must carry it or the page sees a hover.
+        self._held: Optional[str] = None
 
     async def _client(self) -> Any:
         if self._session is None:
@@ -29,14 +33,34 @@ class CdpDriver(Driver):
     async def move(self, x: float, y: float) -> None:
         self._x, self._y = x, y
         client = await self._client()
-        await client.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        event = {"type": "mouseMoved", "x": x, "y": y}
+        if self._held:
+            event.update(button=self._held, buttons=_BUTTON_BITS[self._held])
+        await client.send("Input.dispatchMouseEvent", event)
 
-    async def click(self, button: str = "left", click_count: int = 1) -> None:
+    async def mouse_down(self, button: str = "left") -> None:
+        client = await self._client()
+        self._held = button
+        await client.send(
+            "Input.dispatchMouseEvent",
+            {"type": "mousePressed", "x": self._x, "y": self._y, "button": button, "buttons": _BUTTON_BITS[button], "clickCount": 1},
+        )
+
+    async def mouse_up(self, button: str = "left") -> None:
+        client = await self._client()
+        self._held = None
+        await client.send(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseReleased", "x": self._x, "y": self._y, "button": button, "clickCount": 1},
+        )
+
+    async def click(self, button: str = "left", click_count: int = 1, hold_ms: Optional[float] = None) -> None:
+        hold_s = _CLICK_HOLD_S if hold_ms is None else hold_ms / 1000.0
         client = await self._client()
         base = {"x": self._x, "y": self._y, "button": button, "clickCount": click_count}
         await client.send("Input.dispatchMouseEvent", {"type": "mousePressed", **base})
-        if _CLICK_HOLD_S > 0:
-            await asyncio.sleep(_CLICK_HOLD_S)
+        if hold_s > 0:
+            await asyncio.sleep(hold_s)
         await client.send("Input.dispatchMouseEvent", {"type": "mouseReleased", **base})
 
     async def wheel(self, delta_x: float, delta_y: float) -> None:

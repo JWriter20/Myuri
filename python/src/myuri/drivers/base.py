@@ -44,10 +44,12 @@ class Driver(ABC):
     async def move(self, x: float, y: float) -> None: ...
 
     @abstractmethod
-    async def click(self, button: str = "left", click_count: int = 1) -> None:
+    async def click(self, button: str = "left", click_count: int = 1, hold_ms: Optional[float] = None) -> None:
         """Press-and-release at the current position. ``click_count`` is the
         click's place in a multi-click (2 and 3 continue a double/triple click,
-        which browsers use to select a word/line)."""
+        which browsers use to select a word/line). ``hold_ms`` is how long to
+        hold the button; the cursor draws one per click from recorded people.
+        A driver that ignores it holds for its own fixed time."""
 
     @abstractmethod
     async def down(self, key: str) -> None: ...
@@ -84,6 +86,14 @@ class Driver(ABC):
         await self.press("v")
         await self.up(mod)
 
+    async def mouse_down(self, button: str = "left") -> None:
+        """Press a mouse button without releasing it (for drags)."""
+        raise NotImplementedError("myuri: this driver has no mouse_down(), which drag needs")
+
+    async def mouse_up(self, button: str = "left") -> None:
+        """Release a button pressed with :meth:`mouse_down`."""
+        raise NotImplementedError("myuri: this driver has no mouse_up(), which drag needs")
+
     async def dispose(self) -> None:
         return None
 
@@ -111,10 +121,12 @@ class _FunctionDriver(Driver):
     async def move(self, x: float, y: float) -> None:
         await self._fns["move"](x, y)
 
-    async def click(self, button: str = "left", click_count: int = 1) -> None:
+    async def click(self, button: str = "left", click_count: int = 1, hold_ms: Optional[float] = None) -> None:
         fn = self._fns["click"]
-        # Older click callables take only ``button``; they get plain clicks.
-        if click_count != 1 and _accepts_positional(fn, 2):
+        # Older click callables take only ``button`` (plain clicks) or no hold.
+        if hold_ms is not None and _accepts_positional(fn, 3):
+            await fn(button, click_count, hold_ms)
+        elif click_count != 1 and _accepts_positional(fn, 2):
             await fn(button, click_count)
         else:
             await fn(button)
@@ -152,6 +164,20 @@ class _FunctionDriver(Driver):
         else:
             await super().insert_text(text)
 
+    async def mouse_down(self, button: str = "left") -> None:
+        fn = self._fns.get("mouse_down")
+        if fn is None:
+            await super().mouse_down(button)
+        else:
+            await fn(button)
+
+    async def mouse_up(self, button: str = "left") -> None:
+        fn = self._fns.get("mouse_up")
+        if fn is None:
+            await super().mouse_up(button)
+        else:
+            await fn(button)
+
     async def dispose(self) -> None:
         fn = self._fns.get("dispose")
         if fn:
@@ -171,6 +197,8 @@ def define_driver(
     set_clipboard: Optional[AsyncFn] = None,
     insert_text: Optional[AsyncFn] = None,
     dispose: Optional[AsyncFn] = None,
+    mouse_down: Optional[AsyncFn] = None,
+    mouse_up: Optional[AsyncFn] = None,
 ) -> Driver:
     """Assemble a :class:`Driver` from callables. Only the input primitives and
     ``evaluate`` are required; the rest get sensible defaults."""
@@ -186,4 +214,6 @@ def define_driver(
         set_clipboard=set_clipboard,
         insert_text=insert_text,
         dispose=dispose,
+        mouse_down=mouse_down,
+        mouse_up=mouse_up,
     )

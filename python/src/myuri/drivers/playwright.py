@@ -11,7 +11,8 @@ from typing import Any, Optional
 
 from .base import Driver
 
-_CLICK_HOLD_S = 0.045
+# Hold when the caller gives none; the cursor passes one drawn per click.
+_CLICK_HOLD_S = 0.095
 
 
 class PlaywrightDriver(Driver):
@@ -21,11 +22,18 @@ class PlaywrightDriver(Driver):
     async def move(self, x: float, y: float) -> None:
         await self._page.mouse.move(x, y)
 
-    async def click(self, button: str = "left", click_count: int = 1) -> None:
+    async def click(self, button: str = "left", click_count: int = 1, hold_ms: Optional[float] = None) -> None:
+        hold_s = _CLICK_HOLD_S if hold_ms is None else hold_ms / 1000.0
         await self._page.mouse.down(button=button, click_count=click_count)
-        if _CLICK_HOLD_S > 0:
-            await asyncio.sleep(_CLICK_HOLD_S)
+        if hold_s > 0:
+            await asyncio.sleep(hold_s)
         await self._page.mouse.up(button=button, click_count=click_count)
+
+    async def mouse_down(self, button: str = "left") -> None:
+        await self._page.mouse.down(button=button)
+
+    async def mouse_up(self, button: str = "left") -> None:
+        await self._page.mouse.up(button=button)
 
     async def down(self, key: str) -> None:
         await self._page.keyboard.down(key)

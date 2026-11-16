@@ -1,5 +1,3 @@
-<p align="center"><img src="docs/media/myuri.png" width="160" alt="myuri"></p>
-
 # myuri
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
@@ -78,6 +76,8 @@ await cursor.move('#username')
 await cursor.click('#username')
 await cursor.type('hello@example.com')
 await cursor.scroll('#footer')
+await cursor.click('#word', { clickCount: 2 })   // double click; holdMs for a long press
+await cursor.drag('#card', '#bin')              // selectors or { x, y } points
 await cursor.dispose()          // detaches CDP sessions, clears timers
 ```
 
@@ -90,8 +90,8 @@ const cursor = createCursor({
   driver: defineDriver({
     // required input primitives
     move: (x, y) => myBackend.mouseMove(x, y),
-    // clickCount 2/3 continue a double/triple click (used to clear fields)
-    click: (button, clickCount) => myBackend.mouseClick(button, clickCount),
+    // clickCount 2/3 continue a double/triple click; holdMs is how long to hold the button
+    click: (button, clickCount, holdMs) => myBackend.mouseClick(button, clickCount, holdMs),
     down: (k) => myBackend.keyDown(k),
     up: (k) => myBackend.keyUp(k),
     wheel: (dx, dy) => myBackend.wheel(dx, dy),
@@ -102,6 +102,9 @@ const cursor = createCursor({
     insertText: (t) => myBackend.type(t),
     setClipboard: (t) => myBackend.clipboard(t),
     isClosed: () => myBackend.closed(),
+    // optional, needed only by drag()
+    mouseDown: (button) => myBackend.mouseDown(button),
+    mouseUp: (button) => myBackend.mouseUp(button),
   }),
 })
 ```
@@ -128,6 +131,7 @@ async with async_playwright() as p:
     await cursor.click("#username")
     await cursor.type("hello@example.com")
     await cursor.scroll("#footer")
+    await cursor.drag("#card", "#bin")      # selectors or Vector points
     await cursor.dispose()
 ```
 

@@ -4,6 +4,7 @@ Bring your own driver (Playwright by default, or any backend that can dispatch
 input and run JS in the page). The simulation core (trajectories, scroll model,
 Markov typing, seeded RNG) is pure and shared with the TypeScript package.
 """
+import importlib.metadata as _metadata
 from .cursor import Cursor, create_cursor
 from .drivers import (
     CdpDriver,
@@ -17,6 +18,7 @@ from .drivers import (
 from .geometry import get_better_starting_position, get_random_box_point, path
 from .options import (
     ClickOptions,
+    DragOptions,
     MoveOptions,
     MoveToOptions,
     RandomMoveOptions,
@@ -29,7 +31,10 @@ from .settings import MyuriSettings, default_settings, resolve_settings
 from .types import BoundingBox, TimedVector, Vector, ViewportSize
 from .typing_engine.typer import HumanTyper, TyperInput
 
-__version__ = "2.1.0"
+try:
+    __version__ = _metadata.version("myuri")
+except _metadata.PackageNotFoundError:  # running from a source checkout
+    __version__ = "0.0.0"
 
 __all__ = [
     "Cursor",
@@ -60,6 +65,7 @@ __all__ = [
     "get_better_starting_position",
     "MoveOptions",
     "ClickOptions",
+    "DragOptions",
     "MoveToOptions",
     "ScrollOptions",
     "TypeOptions",

@@ -25,7 +25,8 @@ export interface CdpSession {
   detach(): Promise<void>
 }
 
-const CLICK_HOLD_MS = 45
+/** Hold when the caller gives none; the cursor passes one drawn per click. */
+const CLICK_HOLD_MS = 95
 
 /** Chromium-only driver dispatching mouse input over CDP. */
 export function cdpDriver(page: CdpCapablePage): Driver {
@@ -33,6 +34,9 @@ export function cdpDriver(page: CdpCapablePage): Driver {
   let session: CdpSession | null = null
   let x = 0
   let y = 0
+  // The button a drag holds; CDP moves must carry it or the page sees a hover.
+  let held: MouseButton | null = null
+  const BUTTON_BITS: Record<MouseButton, number> = { left: 1, right: 2, middle: 4 }
 
   const client = async (): Promise<CdpSession> => {
     if (sessionPromise == null) {
@@ -56,13 +60,26 @@ export function cdpDriver(page: CdpCapablePage): Driver {
       x = nx
       y = ny
       const c = await client()
-      await c.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
+      await c.send(
+        'Input.dispatchMouseEvent',
+        held ? { type: 'mouseMoved', x, y, button: held, buttons: BUTTON_BITS[held] } : { type: 'mouseMoved', x, y },
+      )
     },
-    async click(button: MouseButton = 'left', clickCount = 1) {
+    async click(button: MouseButton = 'left', clickCount = 1, holdMs = CLICK_HOLD_MS) {
       const c = await client()
       await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount })
-      if (CLICK_HOLD_MS > 0) await new Promise((r) => setTimeout(r, CLICK_HOLD_MS))
+      if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs))
       await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount })
+    },
+    async mouseDown(button: MouseButton = 'left') {
+      const c = await client()
+      held = button
+      await c.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: BUTTON_BITS[button], clickCount: 1 })
+    },
+    async mouseUp(button: MouseButton = 'left') {
+      const c = await client()
+      held = null
+      await c.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 })
     },
     async wheel(deltaX, deltaY) {
       const c = await client()

@@ -1,5 +1,3 @@
-<p align="center"><img src="https://cdn.jsdelivr.net/npm/myuri/myuri.png" width="160" alt="myuri"></p>
-
 # myuri (Python)
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
@@ -29,6 +27,7 @@ async with async_playwright() as p:
     await cursor.click("#username")
     await cursor.type("hello@example.com")
     await cursor.scroll("#footer")
+    await cursor.drag("#card", "#bin")      # selectors or Vector points
     await cursor.dispose()
 ```
 
