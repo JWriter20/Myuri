@@ -50,14 +50,35 @@ class ScrollRealism:
 
 
 @dataclass
+class WheelSettings:
+    """How a mouse wheel turns (used when ``ScrollSettings.device`` is ``"mouse"``).
+
+    ``style`` is ``"notched"`` (Windows, Linux: one event per notch) or
+    ``"macos"`` (accelerated lines in 20 ms frames).
+    """
+
+    style: str = "notched"
+    px_per_notch: int = 100
+    px_per_line: int = 16
+
+
+@dataclass
 class ScrollSettings:
-    """Scroll pacing, overshoot, and finish position."""
+    """Scroll pacing, overshoot, and finish position.
+
+    ``device`` is what the identity scrolls with: ``"trackpad"`` (default)
+    sends a stream of small pixel deltas, ``"mouse"`` turns a wheel in notches
+    (see ``wheel``). Camoufox turns every wheel call into notches, so use
+    ``"mouse"`` there.
+    """
 
     delay: float = 50
     speed_factor: float = 1.0
     overshoot: float = 30
     finish_position: float = 0.5
     realism: ScrollRealism = field(default_factory=ScrollRealism)
+    device: str = "trackpad"
+    wheel: WheelSettings = field(default_factory=WheelSettings)
 
 
 @dataclass

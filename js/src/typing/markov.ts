@@ -2,50 +2,31 @@
  * Markov chain-based typing simulation engine.
  * Ported from HumanTyping (https://github.com/Lax3n/HumanTyping)
  *
- * Models realistic human typing with:
- * - Variable speed based on word complexity and key distance
+ * Decides WHAT a person types on the way to the target text:
  * - Neighbor-key errors and character swap errors
  * - Probabilistic error detection and backspace correction
- * - Fatigue over longer texts
- * - Natural pauses at word boundaries
  *
- * The engine is driver-agnostic: it produces a stream of structured
- * `TypingEvent`s that a consumer (see `HumanTyper`) replays against some
- * input surface. It never touches a browser or the DOM.
+ * It has no notion of time: `timing.ts` schedules the resulting keys. The
+ * engine is driver-agnostic and never touches a browser or the DOM.
  */
 
 import {
-  DEFAULT_WPM, WPM_STD, AVG_WORD_LENGTH,
   PROB_ERROR, PROB_SWAP_ERROR, PROB_NOTICE_ERROR,
-  SPEED_BOOST_COMMON_WORD, SPEED_PENALTY_COMPLEX_WORD,
-  SPEED_BOOST_CLOSE_KEYS, SPEED_BOOST_BIGRAM, SPEED_BOOST_TRIGRAM,
-  SPEED_BOOST_SPACE,
-  TIME_KEYSTROKE_STD, TIME_BACKSPACE_MEAN, TIME_BACKSPACE_STD,
-  TIME_REACTION_MEAN, TIME_REACTION_STD,
-  TIME_DIRECT_ACCENT_PENALTY, TIME_COMPOSED_ACCENT_PENALTY,
-  TIME_UPPERCASE_PENALTY,
-  FATIGUE_FACTOR, FATIGUE_CAP,
   DRIFT_CORRECTION_PROB, COMPLEX_WORD_ERROR_MULT,
   COMMON_WORD_ERROR_MULT, COMPOSED_ACCENT_ERROR_MULT,
-  FAR_KEY_PENALTY, FAR_KEY_THRESHOLD, CLOSE_KEY_THRESHOLD,
-  MIN_KEYSTROKE_TIME, MIN_REACTION_TIME, MIN_BACKSPACE_TIME,
-  MIN_SPEED_MULTIPLIER
 } from './config.js'
 import { KeyboardLayout } from './keyboard.js'
-import { getWordDifficulty, isCommonBigram, isCommonTrigram } from './language.js'
-import { gaussian } from '../rng.js'
+import { getWordDifficulty } from './language.js'
 import type { Rng } from '../rng.js'
 
 /**
  * A single modeled typing action. `chars` holds the literal code point(s)
- * produced (empty for a backspace); `dtMs` is the time to wait for this
- * action, in milliseconds (already inclusive of any reaction pause). Consumers
- * dispatch on `kind` — no string parsing required.
+ * produced (empty for a backspace; two for a swap). Consumers dispatch on
+ * `kind` — no string parsing required.
  */
 export type TypingEvent = {
   kind: 'type' | 'error' | 'swap' | 'backspace' | 'correct'
   chars: string
-  dtMs: number
 }
 
 // Word-boundary code points that trigger a strict correction check.
@@ -53,11 +34,8 @@ const WORD_BOUNDARY_CHARS = ' \n\t.,;!?:()[]{}<>"\''
 
 interface TypingState {
   currentText: string[] // typed code points so far
-  totalTime: number // seconds
   history: TypingEvent[]
-  lastCharTyped: string | null
   lastKind: TypingEvent['kind'] | null
-  fatigueMultiplier: number
   mentalCursorPos: number // index into targetChars (code points)
 }
 
@@ -66,25 +44,12 @@ export class MarkovTyper {
   private targetChars: string[] // target as an array of code points
   private keyboard: KeyboardLayout
   private state: TypingState
-  private baseKeystrokeTime: number
   private mistakeMultiplier: number
   private rng: Rng
 
-  constructor(
-    targetText: string,
-    targetWpm: number = DEFAULT_WPM,
-    mistakeMultiplier: number = 1.0,
-    rng: Rng,
-    // Pre-resolved per-session WPM. When provided (e.g. sampled once by the
-    // HumanTyper so every field shares one speed), it is used directly instead
-    // of drawing a fresh N(targetWpm, WPM_STD) sample per instance.
-    sessionWpm?: number
-  ) {
+  constructor(targetText: string, mistakeMultiplier: number = 1.0, rng: Rng) {
     if (!targetText || targetText.length === 0) {
       throw new Error('targetText must be a non-empty string')
-    }
-    if (targetWpm <= 0) {
-      throw new Error('targetWpm must be a positive number')
     }
 
     this.targetText = targetText
@@ -94,23 +59,14 @@ export class MarkovTyper {
     this.keyboard = new KeyboardLayout()
     this.mistakeMultiplier = mistakeMultiplier
     this.rng = rng
-
-    const resolvedWpm = sessionWpm !== undefined
-      ? Math.max(10, sessionWpm)
-      : Math.max(10, gaussian(this.rng, targetWpm, WPM_STD))
-    this.baseKeystrokeTime = 60 / (resolvedWpm * AVG_WORD_LENGTH)
-
     this.state = this.freshState()
   }
 
   private freshState(): TypingState {
     return {
       currentText: [],
-      totalTime: 0,
       history: [],
-      lastCharTyped: null,
       lastKind: null,
-      fatigueMultiplier: 1.0,
       mentalCursorPos: 0
     }
   }
@@ -135,110 +91,16 @@ export class MarkovTyper {
     return this.targetChars.slice(start, end).join('')
   }
 
-  private calculateKeystrokeTime(charToType: string): number {
-    let keystrokeTime = this.baseKeystrokeTime * this.state.fatigueMultiplier
-
-    const currentWord = this.getCurrentWordContext()
-    if (currentWord) {
-      const difficulty = getWordDifficulty(currentWord)
-      if (difficulty === 'common') {
-        keystrokeTime *= SPEED_BOOST_COMMON_WORD
-      } else if (difficulty === 'complex') {
-        keystrokeTime *= SPEED_PENALTY_COMPLEX_WORD
-      }
-    }
-
-    if (this.state.lastCharTyped) {
-      let sequenceBoost = false
-      const len = this.state.currentText.length
-
-      // Trigram boost (strongest — we're mid-flow in a common sequence)
-      if (len >= 2) {
-        const c1 = this.state.currentText[len - 2]
-        const c2 = this.state.currentText[len - 1]
-        if (isCommonTrigram(c1, c2, charToType)) {
-          keystrokeTime *= SPEED_BOOST_TRIGRAM
-          sequenceBoost = true
-        }
-      }
-
-      // Bigram boost
-      if (!sequenceBoost && isCommonBigram(this.state.lastCharTyped, charToType)) {
-        keystrokeTime *= SPEED_BOOST_BIGRAM
-        sequenceBoost = true
-      }
-
-      // Fall back to distance-based adjustments
-      if (!sequenceBoost) {
-        const dist = this.keyboard.getDistance(this.state.lastCharTyped, charToType)
-        if (dist > 0 && dist < CLOSE_KEY_THRESHOLD) {
-          keystrokeTime *= SPEED_BOOST_CLOSE_KEYS
-        } else if (dist > FAR_KEY_THRESHOLD) {
-          keystrokeTime *= FAR_KEY_PENALTY
-        }
-      }
-    }
-
-    if (charToType === ' ') {
-      keystrokeTime *= SPEED_BOOST_SPACE // Space is fast — thumb key, always hovering
-    } else if (this.keyboard.isComposedAccent(charToType)) {
-      keystrokeTime += TIME_COMPOSED_ACCENT_PENALTY
-    } else if (this.keyboard.isDirectAccent(charToType)) {
-      keystrokeTime += TIME_DIRECT_ACCENT_PENALTY
-    } else if (charToType !== charToType.toLowerCase()) {
-      keystrokeTime += TIME_UPPERCASE_PENALTY
-    }
-
-    // Apply floor to prevent unrealistic stacking of boosts
-    keystrokeTime = Math.max(MIN_SPEED_MULTIPLIER * this.baseKeystrokeTime, keystrokeTime)
-
-    const dt = gaussian(this.rng, keystrokeTime, TIME_KEYSTROKE_STD)
-    return Math.max(MIN_KEYSTROKE_TIME, dt)
-  }
-
-  private bumpFatigue(): void {
-    this.state.fatigueMultiplier = Math.min(
-      FATIGUE_CAP,
-      this.state.fatigueMultiplier * FATIGUE_FACTOR
-    )
-  }
-
-  /**
-   * Time (seconds) for a single keystroke. `literal` keys (code points not on
-   * the layout) use the plain base timing — no bigram/distance/accent modeling.
-   */
-  private keystrokeDt(char: string, literal: boolean): number {
-    if (literal) {
-      const base = this.baseKeystrokeTime * this.state.fatigueMultiplier
-      return Math.max(MIN_KEYSTROKE_TIME, gaussian(this.rng, base, TIME_KEYSTROKE_STD))
-    }
-    return this.calculateKeystrokeTime(char)
-  }
-
-  /**
-   * Advance the simulation by one typed code point: bump fatigue, sample the
-   * keystroke time, append the char, and move the mental cursor. Returns the
-   * sampled dt in seconds. Shared by every keystroke path so fatigue is applied
-   * exactly once per emitted character (including inside swaps).
-   */
-  private advanceChar(char: string, literal: boolean): number {
-    this.bumpFatigue()
-    const dt = this.keystrokeDt(char, literal)
-    this.state.totalTime += dt
+  /** Append a typed code point and move the mental cursor. */
+  private advanceChar(char: string): void {
     this.state.currentText.push(char)
-    this.state.lastCharTyped = char
     this.state.mentalCursorPos += 1
-    return dt
   }
 
   /** Emit a single-keystroke event (type / error / correct). */
-  private emitKeystroke(
-    char: string,
-    kind: 'type' | 'error' | 'correct',
-    literal = false
-  ): TypingEvent {
-    const dt = this.advanceChar(char, literal)
-    const event: TypingEvent = { kind, chars: char, dtMs: dt * 1000 }
+  private emitKeystroke(char: string, kind: 'type' | 'error' | 'correct'): TypingEvent {
+    this.advanceChar(char)
+    const event: TypingEvent = { kind, chars: char }
     this.state.history.push(event)
     this.state.lastKind = kind
     return event
@@ -304,24 +166,9 @@ export class MarkovTyper {
       }
 
       if (shouldCorrect) {
-        let dtTotal = 0
-        // Reaction time (only if we weren't already backspacing)
-        if (!wasBackspacing) {
-          dtTotal += Math.max(
-            MIN_REACTION_TIME,
-            gaussian(this.rng, TIME_REACTION_MEAN, TIME_REACTION_STD)
-          )
-        }
-
-        // Perform Backspace
-        dtTotal += Math.max(
-          MIN_BACKSPACE_TIME,
-          gaussian(this.rng, TIME_BACKSPACE_MEAN, TIME_BACKSPACE_STD)
-        )
-        this.state.totalTime += dtTotal
         this.state.currentText.pop()
 
-        const event: TypingEvent = { kind: 'backspace', chars: '', dtMs: dtTotal * 1000 }
+        const event: TypingEvent = { kind: 'backspace', chars: '' }
         this.state.history.push(event)
         this.state.lastKind = 'backspace'
 
@@ -344,7 +191,7 @@ export class MarkovTyper {
 
     // If the character is not on our keyboard, type it literally (no error modeling)
     if (!this.keyboard.hasKey(charIntended) && charIntended !== ' ') {
-      return this.emitKeystroke(charIntended, 'type', /* literal */ true)
+      return this.emitKeystroke(charIntended, 'type')
     }
 
     // Swap Error (Anticipation): e.g. "the" -> "hte"
@@ -352,13 +199,9 @@ export class MarkovTyper {
       const charAfter = this.targetChars[this.state.mentalCursorPos + 1]
       if (charAfter !== ' ' && charAfter !== charIntended) {
         if (this.rng() < Math.min(1, PROB_SWAP_ERROR * this.mistakeMultiplier)) {
-          const dt1 = this.advanceChar(charAfter, false)
-          const dt2 = this.advanceChar(charIntended, false)
-          const event: TypingEvent = {
-            kind: 'swap',
-            chars: charAfter + charIntended,
-            dtMs: (dt1 + dt2) * 1000
-          }
+          this.advanceChar(charAfter)
+          this.advanceChar(charIntended)
+          const event: TypingEvent = { kind: 'swap', chars: charAfter + charIntended }
           this.state.history.push(event)
           this.state.lastKind = 'swap'
           return event
@@ -407,13 +250,10 @@ export class MarkovTyper {
    */
   private emitCorrectTyping(): void {
     this.state = this.freshState()
-    for (const char of this.targetChars) {
-      const literal = !this.keyboard.hasKey(char) && char !== ' '
-      this.emitKeystroke(char, 'correct', literal)
-    }
+    for (const char of this.targetChars) this.emitKeystroke(char, 'correct')
   }
 
-  run(): { totalTime: number; history: TypingEvent[] } {
+  run(): { history: TypingEvent[] } {
     const budget = this.targetChars.length * 10
     this.runSteps(budget)
 
@@ -427,6 +267,6 @@ export class MarkovTyper {
       this.emitCorrectTyping()
     }
 
-    return { totalTime: this.state.totalTime, history: this.state.history }
+    return { history: this.state.history }
   }
 }

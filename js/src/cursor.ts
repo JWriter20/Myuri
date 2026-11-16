@@ -20,6 +20,7 @@ import {
   VIEWPORT_PADDING,
 } from './geometry.js'
 import { scrollModel } from './motion/scroll-model.js'
+import { generateWheelPath } from './motion/wheel-model.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type { BoundingBox } from './math.js'
 import type {
@@ -218,14 +219,13 @@ export class Cursor {
     this.previous = options.start ?? getBetterStartingPosition(options.dimensions, this.rng)
 
     const typerInput: TyperInput = {
-      press: (key, opts) => this.driver.press(key, opts),
       down: (key) => this.driver.down(key),
       up: (key) => this.driver.up(key),
+      insertText: (text) => this.driver.insertText(text),
     }
     this.typer = new HumanTyper(typerInput, {
       wpm: this.settings.typing.wpm,
       mistakeMultiplier: this.settings.typing.mistakeMultiplier,
-      keyDelay: this.settings.typing.keyDelay,
       rng: this.rng,
     })
 
@@ -254,24 +254,12 @@ export class Cursor {
 
   /**
    * Adjust the typing mistake multiplier at runtime (e.g. 0 to disable typos on
-   * precise fields like emails/dates). Rebuilds the typer on the SAME rng stream,
-   * so motion/timing determinism for a given seed is preserved.
+   * precise fields like emails/dates). Keeps the typer, so the session's speed
+   * and hold style carry on.
    */
   setMistakeMultiplier(multiplier: number): void {
     ;(this.settings.typing as { mistakeMultiplier: number }).mistakeMultiplier = multiplier
-    this.typer = new HumanTyper(
-      {
-        press: (key, opts) => this.driver.press(key, opts),
-        down: (key) => this.driver.down(key),
-        up: (key) => this.driver.up(key),
-      },
-      {
-        wpm: this.settings.typing.wpm,
-        mistakeMultiplier: multiplier,
-        keyDelay: this.settings.typing.keyDelay,
-        rng: this.rng,
-      },
-    )
+    this.typer.setMistakeMultiplier(multiplier)
   }
 
   // ---- action lifecycle ---------------------------------------------------
@@ -1143,7 +1131,12 @@ export class Cursor {
     // wheel→px DPR ratio is identical for containers).
     const pre = plan.isPage ? (await scrollMetricsOf(this.driver)).offset : null
     const speedIrregularity = opts.realism?.speedIrregularity ?? this.settings.scroll.realism.speedIrregularity
-    const events = scrollModel.generateScrollPath(wantedDistance, this.rng, undefined, speedIrregularity)
+    const mouse = this.settings.scroll.device === 'mouse'
+    const events = mouse
+      ? generateWheelPath(wantedDistance, this.rng, this.settings.scroll.wheel)
+      : scrollModel.generateScrollPath(wantedDistance, this.rng, undefined, speedIrregularity)
+    // A wheel moves in whole notches, so calibrate against what was sent.
+    const dispatched = events.reduce((sum, ev) => sum + ev.deltaY, 0)
     const sf = opts.speedFactor ?? 1
 
     // Emit the gesture on the model's clock, like an input device: never wait
@@ -1171,7 +1164,8 @@ export class Cursor {
     for (const ev of events) {
       if ('error' in failure) break // e.g. the page closed mid-gesture
       accumulator += ev.deltaY
-      if (Math.abs(accumulator) >= 8) {
+      // A notch is one event however small; only trackpad deltas batch.
+      if (mouse || Math.abs(accumulator) >= 8) {
         const dispatch = Math.trunc(accumulator)
         accumulator -= dispatch
         send(dispatch)
@@ -1188,11 +1182,11 @@ export class Cursor {
     if (pre != null) {
       const post = await this.settleScroll(pre)
       const actualDelta = post - pre
-      if (this.scrollMultiplier == null && Math.abs(wantedDistance) > 10 && Math.abs(actualDelta) > 10) {
+      if (this.scrollMultiplier == null && Math.abs(dispatched) > 10 && Math.abs(actualDelta) > 10) {
         // Clamp: a first scroll truncated by maxScroll (or partially consumed by
         // an inner scroller) would otherwise poison every subsequent scroll with
         // a wildly inflated multiplier.
-        this.scrollMultiplier = Math.min(3, Math.max(0.3, Math.round((wantedDistance / actualDelta) * 100) / 100))
+        this.scrollMultiplier = Math.min(3, Math.max(0.3, Math.round((dispatched / actualDelta) * 100) / 100))
       }
     } else {
       await delay(120) // let the container settle (window-scroll settle doesn't apply)

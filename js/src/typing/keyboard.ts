@@ -1,9 +1,8 @@
 /**
- * Keyboard layout model with distance calculations and neighbor-key lookups.
+ * Keyboard layout model for neighbor-key typo lookups.
  * Ported from HumanTyping (https://github.com/Lax3n/HumanTyping)
  */
 
-import { FAR_KEY_THRESHOLD } from './config.js'
 import type { Rng } from '../rng.js'
 
 export class KeyboardLayout {
@@ -68,18 +67,6 @@ export class KeyboardLayout {
     }
 
     return neighbors
-  }
-
-  getDistance(char1: string, char2: string): number {
-    const norm1 = this.normalizeChar(char1)
-    const norm2 = this.normalizeChar(char2)
-
-    const pos1 = this.posMap.get(norm1)
-    const pos2 = this.posMap.get(norm2)
-
-    if (!pos1 || !pos2) return FAR_KEY_THRESHOLD
-
-    return Math.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
   }
 
   getRandomNeighbor(char: string, rng: Rng): string {

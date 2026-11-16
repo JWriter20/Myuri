@@ -1,23 +1,34 @@
-"""Human-like typing powered by a Markov chain simulation.
+"""Human-like typing.
 
-Based on HumanTyping (https://github.com/Lax3n/HumanTyping) via the
-TypeScript reference implementation (js/src/typing/typer.ts).
+Python mirror of ``js/src/typing/typer.ts``. Two stages:
 
-Models variable speed, neighbor-key errors, character swaps, probabilistic
-correction, fatigue, and natural pauses. This module is fully decoupled from
-any browser driver: it drives a minimal keyboard-input surface (``TyperInput``)
-and knows nothing about pages, elements, or the host platform.
+1. ``MarkovTyper`` (from HumanTyping, https://github.com/Lax3n/HumanTyping)
+   decides WHAT is pressed: the target text plus neighbor-key typos, swaps
+   and backspace corrections.
+2. ``KeystrokeTiming`` decides WHEN: a keydown/keyup timeline fitted to
+   recorded human typing and English bigram frequencies, with explicit Shift
+   presses and natural key overlap (rollover).
+
+The timeline is played on one absolute clock: each action fires at
+``start + at``, so driver round-trips are absorbed instead of being added to
+every gap. This module knows nothing about pages, elements or the host OS.
+
+Driving a browser that paces keys itself (e.g. Camoufox's humanize keyboard
+channel) would add a second set of delays: run that channel raw.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
-from typing import Callable, Optional, Protocol
+import time
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Protocol
 
 from ..rng import gaussian
 from .config import DEFAULT_WPM, WPM_STD
 from .markov import MarkovTyper, TypingEvent
+from .timing import KeyAction, KeystrokeTiming, Stroke, char_to_stroke
 
 Rng = Callable[[], float]
 
@@ -25,29 +36,67 @@ Rng = Callable[[], float]
 class TyperInput(Protocol):
     """Minimal keyboard-input surface the typer depends on.
 
-    A browser driver, a test double, or any other keystroke sink can
-    implement this.
+    ``down``/``up`` take a key name ('a', 'A', 'Shift', 'Enter', ...). An
+    optional ``insert_text(text)`` inserts code points no US-layout key
+    produces (emoji, 'é'); without it they are sent through ``down``/``up``.
     """
-
-    async def press(self, key: str, delay: Optional[float] = None) -> None: ...
 
     async def down(self, key: str) -> None: ...
 
     async def up(self, key: str) -> None: ...
 
 
-def char_to_key(char: str) -> str:
-    """Map a typed code point to the key name ``TyperInput.press`` expects.
+class TypingClock(Protocol):
+    """Time source for playing the timeline. Inject a virtual one in tests."""
 
-    Control characters have no printable key, so they are translated to
-    their named equivalents; every other printable code point passes
-    through unchanged.
-    """
-    if char == "\n":
-        return "Enter"
-    if char == "\t":
-        return "Tab"
-    return char
+    def now(self) -> float:
+        """Monotonic milliseconds."""
+        ...
+
+    async def sleep(self, ms: float) -> None: ...
+
+
+class _RealClock:
+    def now(self) -> float:
+        return time.monotonic() * 1000.0
+
+    async def sleep(self, ms: float) -> None:
+        await asyncio.sleep(ms / 1000.0)
+
+
+real_clock: TypingClock = _RealClock()
+
+
+def char_to_key(char: str) -> str:
+    """Map a typed code point to its key name ('\\n' -> 'Enter', '\\t' -> 'Tab')."""
+    return char_to_stroke(char).key
+
+
+@dataclass
+class _StrokeInfo:
+    stroke: Stroke
+    char: str  # '' for Backspace
+    event: TypingEvent
+    mistake: bool  # fire on_mistake at this keydown (last char of an error/swap)
+
+
+def _flatten(history: List[TypingEvent]) -> List[_StrokeInfo]:
+    out: List[_StrokeInfo] = []
+    for event in history:
+        if event.kind == "backspace":
+            out.append(_StrokeInfo(Stroke("Backspace"), "", event, False))
+            continue
+        chars = list(event.chars)
+        for i, char in enumerate(chars):
+            out.append(
+                _StrokeInfo(
+                    char_to_stroke(char),
+                    char,
+                    event,
+                    event.kind in ("error", "swap") and i == len(chars) - 1,
+                )
+            )
+    return out
 
 
 class HumanTyper:
@@ -61,6 +110,7 @@ class HumanTyper:
         on_character: Optional[Callable[[str, float], None]] = None,
         on_mistake: Optional[Callable[[str], None]] = None,
         on_backspace: Optional[Callable[[], None]] = None,
+        clock: Optional[TypingClock] = None,
     ) -> None:
         self._input = input
         self._wpm = wpm
@@ -69,100 +119,91 @@ class HumanTyper:
         self._on_mistake = on_mistake
         self._on_backspace = on_backspace
         self._rng: Rng = rng if rng is not None else random.random
-        # Per-session typing speed, sampled ONCE at construction so every
-        # field this typer fills shares one natural speed. A real user doesn't
-        # re-roll their WPM between form fields; MarkovTyper used to resample
-        # per field, which this fixes.
+        self._clock: TypingClock = clock if clock is not None else real_clock
+        # Per-session typing speed, sampled ONCE so every field this typer
+        # fills shares one natural speed.
         self._session_wpm = max(10.0, gaussian(self._rng, self._wpm, WPM_STD))
+        self._timing = KeystrokeTiming(self._session_wpm, self._rng)
 
     async def type(self, text: str) -> None:
-        """Type text with human-like timing, errors, and corrections.
-
-        Runs the Markov chain simulation upfront to get the event timeline,
-        then replays it. The modeled inter-key delay is the single source of
-        truth for timing: we sleep it, then press the key WITHOUT an extra
-        hold delay (fixes the old double-counting that slowed real WPM).
-        """
+        """Type text with human-like timing, errors, and corrections."""
         if not text:
             return
+        history = MarkovTyper(text, self._mistake_multiplier, self._rng).run().history
+        strokes = _flatten(history)
+        actions, down_at = self._timing.plan([s.stroke for s in strokes])
 
-        typer = MarkovTyper(
-            text,
-            self._wpm,
-            self._mistake_multiplier,
-            self._rng,
-            self._session_wpm,
-        )
-        result = typer.run()
-
-        for event in result.history:
-            await self._dispatch(event)
-
-    async def _dispatch(self, event: TypingEvent) -> None:
-        delay_ms = event.dt_ms
-        if delay_ms > 0:
-            await asyncio.sleep(delay_ms / 1000)
-
-        if event.kind == "backspace":
-            await self._input.press("Backspace")
-            if self._on_backspace is not None:
-                self._on_backspace()
-            return
-
-        if event.kind == "swap":
-            for char in event.chars:
-                await self._input.press(char_to_key(char))
-                if self._on_character is not None:
-                    self._on_character(char, delay_ms)
-            if self._on_mistake is not None:
-                self._on_mistake(event.chars)
-            return
-
-        if event.kind == "error":
-            await self._input.press(char_to_key(event.chars))
-            if self._on_mistake is not None:
-                self._on_mistake(event.chars)
+        def on_action(a: KeyAction) -> None:
+            if a.stroke is None or a.type == "up":
+                return
+            info = strokes[a.stroke]
+            delay_ms = down_at[a.stroke] - down_at[a.stroke - 1] if a.stroke > 0 else 0.0
+            if info.char == "":
+                if self._on_backspace is not None:
+                    self._on_backspace()
+                return
             if self._on_character is not None:
-                self._on_character(event.chars, delay_ms)
-            return
+                self._on_character(info.char, delay_ms)
+            if info.mistake and self._on_mistake is not None:
+                self._on_mistake(info.event.chars)
 
-        if event.kind in ("type", "correct"):
-            for char in event.chars:
-                await self._input.press(char_to_key(char))
-                if self._on_character is not None:
-                    self._on_character(char, delay_ms)
-            return
+        await self._play(actions, on_action)
 
-    async def delete_all(
-        self, count: int, select_all_modifier: Optional[str] = None
+    async def _play(
+        self, actions: List[KeyAction], on_action: Optional[Callable[[KeyAction], None]] = None
     ) -> None:
+        """Play a timeline on the absolute clock; release held keys on error."""
+        start = self._clock.now()
+        held: List[str] = []
+        insert_text = getattr(self._input, "insert_text", None)
+        try:
+            for a in actions:
+                wait = start + a.at - self._clock.now()
+                if wait > 0:
+                    await self._clock.sleep(wait)
+                if a.type == "down":
+                    await self._input.down(a.key)
+                    held.append(a.key)
+                elif a.type == "up":
+                    await self._input.up(a.key)
+                    if a.key in held:
+                        held.remove(a.key)
+                elif insert_text is not None:
+                    await insert_text(a.key)
+                else:
+                    await self._input.down(a.key)
+                    await self._input.up(a.key)
+                if on_action is not None:
+                    on_action(a)
+        finally:
+            for key in held:
+                try:
+                    await self._input.up(key)
+                except Exception:
+                    pass
+
+    async def delete_all(self, count: int, select_all_modifier: Optional[str] = None) -> None:
         """Delete text.
 
         With a ``select_all_modifier`` (e.g. 'Control' or 'Meta' — the caller
         decides, no platform sniffing here) we hold it, press 'a', release,
-        then press Backspace once. Otherwise we press Backspace ``count``
-        times.
+        then press Backspace once. Otherwise we press Backspace ``count`` times.
         """
         if select_all_modifier:
-            await self._input.down(select_all_modifier)
-            await self._input.press("a")
-            await self._input.up(select_all_modifier)
-            await self._input.press("Backspace")
+            await self._play(self._timing.plan_select_all_delete(select_all_modifier))
             return
-
-        for _ in range(count):
-            await self._input.press("Backspace")
+        if count <= 0:
+            return
+        actions, _ = self._timing.plan([Stroke("Backspace") for _ in range(count)])
+        await self._play(actions)
 
     def set_wpm(self, wpm: float) -> None:
-        """Update the typing speed (words per minute).
-
-        Re-rolls the per-session speed around the new target.
-        """
+        """Update the typing speed; re-rolls the per-session speed around it."""
         self._wpm = wpm
         self._session_wpm = max(10.0, gaussian(self._rng, self._wpm, WPM_STD))
+        self._timing.set_wpm(self._session_wpm)
 
     def get_wpm(self) -> float:
-        """Get current WPM setting."""
         return self._wpm
 
     def set_mistake_multiplier(self, mult: float) -> None:
@@ -170,5 +211,4 @@ class HumanTyper:
         self._mistake_multiplier = mult
 
     def get_mistake_multiplier(self) -> float:
-        """Get current mistake multiplier."""
         return self._mistake_multiplier

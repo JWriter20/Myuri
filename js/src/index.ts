@@ -55,4 +55,6 @@ export type {
 } from './options.js'
 
 // Typing engine (advanced/standalone use).
-export { HumanTyper, type TyperInput, type HumanTyperOptions } from './typing/typer.js'
+export { HumanTyper, realClock, type TyperInput, type HumanTyperOptions, type TypingClock } from './typing/typer.js'
+export { KeystrokeTiming, strokesForText, needsShift, type Stroke, type KeyAction } from './typing/timing.js'
+export { generateWheelPath, type WheelStyle, type WheelOptions } from './motion/wheel-model.js'

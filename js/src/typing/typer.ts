@@ -1,16 +1,26 @@
 /**
- * Human-like typing powered by a Markov chain simulation.
- * Based on HumanTyping (https://github.com/Lax3n/HumanTyping)
+ * Human-like typing.
  *
- * Models variable speed, neighbor-key errors, character swaps, probabilistic
- * correction, fatigue, and natural pauses. This module is fully decoupled from
- * any browser driver: it drives a minimal keyboard-input surface (`TyperInput`)
- * and knows nothing about pages, elements, or `process.platform`.
+ * Two stages:
+ *  1. `MarkovTyper` (from HumanTyping, https://github.com/Lax3n/HumanTyping)
+ *     decides WHAT is pressed: the target text plus neighbor-key typos, swaps
+ *     and backspace corrections.
+ *  2. `KeystrokeTiming` decides WHEN: a keydown/keyup timeline fitted to
+ *     recorded human typing and English bigram frequencies, with explicit
+ *     Shift presses and natural key overlap (rollover).
+ *
+ * The timeline is played on one absolute clock: each action fires at
+ * `start + at`, so driver round-trips are absorbed instead of being added to
+ * every gap. This module knows nothing about pages, elements or the host OS.
+ *
+ * Driving a browser that paces keys itself (e.g. Camoufox's humanize keyboard
+ * channel) would add a second set of delays: run that channel raw.
  */
 
 import { MarkovTyper } from './markov.js'
 import type { TypingEvent } from './markov.js'
 import { DEFAULT_WPM, WPM_STD } from './config.js'
+import { KeystrokeTiming, charToStroke, type KeyAction, type Stroke } from './timing.js'
 import { gaussian, defaultRng } from '../rng.js'
 import type { Rng } from '../rng.js'
 
@@ -19,36 +29,69 @@ import type { Rng } from '../rng.js'
  * test double, or any other keystroke sink can implement this.
  */
 export interface TyperInput {
-  press(key: string, options?: { delay?: number }): Promise<void>
+  /** Press a key down without releasing it ('a', 'A', 'Shift', 'Enter', ...). */
   down(key: string): Promise<void>
+  /** Release a key pressed with `down`. */
   up(key: string): Promise<void>
+  /**
+   * Insert text no US-layout key produces (emoji, 'é'). Without it such code
+   * points are sent through `down`/`up`.
+   */
+  insertText?(text: string): Promise<void>
+}
+
+/** Time source for playing the timeline. Inject a virtual one in tests. */
+export interface TypingClock {
+  /** Monotonic milliseconds. */
+  now(): number
+  sleep(ms: number): Promise<void>
+}
+
+export const realClock: TypingClock = {
+  now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }
 
 export interface HumanTyperOptions {
   wpm?: number
   mistakeMultiplier?: number
-  /** Per-key hold (keydown→keyup) ms, sampled in [min, max]. Default {30,50}. */
+  /** @deprecated Ignored since 3.1: holds are drawn per key from recorded typing. */
   keyDelay?: { min: number; max: number }
+  /** Called at each character's keydown with the gap since the previous keydown. */
   onCharacter?: (char: string, delayMs: number) => void
   onMistake?: (info: { typedChar: string }) => void
   onBackspace?: () => void
   rng?: Rng
+  clock?: TypingClock
 }
 
-/**
- * Map a typed code point to the key name `TyperInput.press` expects. Control
- * characters have no printable key, so they are translated to their named
- * equivalents; every other printable code point passes through unchanged.
- */
-function charToKey(char: string): string {
-  switch (char) {
-    case '\n':
-      return 'Enter'
-    case '\t':
-      return 'Tab'
-    default:
-      return char
+/** What each planned stroke means, for callbacks. */
+interface StrokeInfo {
+  stroke: Stroke
+  char: string // '' for Backspace
+  event: TypingEvent
+  /** Fire onMistake at this stroke's keydown (last char of an error/swap). */
+  mistake: boolean
+}
+
+function flatten(history: TypingEvent[]): StrokeInfo[] {
+  const out: StrokeInfo[] = []
+  for (const event of history) {
+    if (event.kind === 'backspace') {
+      out.push({ stroke: { key: 'Backspace' }, char: '', event, mistake: false })
+      continue
+    }
+    const chars = Array.from(event.chars)
+    chars.forEach((char, i) => {
+      out.push({
+        stroke: charToStroke(char),
+        char,
+        event,
+        mistake: (event.kind === 'error' || event.kind === 'swap') && i === chars.length - 1,
+      })
+    })
   }
+  return out
 }
 
 export class HumanTyper {
@@ -58,12 +101,12 @@ export class HumanTyper {
   private onCharacterCallback?: (char: string, delayMs: number) => void
   private onMistakeCallback?: (info: { typedChar: string }) => void
   private onBackspaceCallback?: () => void
-  private keyDelay: { min: number; max: number }
   private rng: Rng
+  private clock: TypingClock
   // Per-session typing speed, sampled ONCE at construction so every field this
-  // typer fills shares one natural speed. A real user doesn't re-roll their WPM
-  // between form fields; MarkovTyper used to resample per field, which this fixes.
+  // typer fills shares one natural speed.
   private sessionWpm: number
+  private timing: KeystrokeTiming
 
   constructor(input: TyperInput, options?: HumanTyperOptions) {
     this.input = input
@@ -72,76 +115,58 @@ export class HumanTyper {
     this.onCharacterCallback = options?.onCharacter
     this.onMistakeCallback = options?.onMistake
     this.onBackspaceCallback = options?.onBackspace
-    this.keyDelay = options?.keyDelay ?? { min: 30, max: 50 }
     this.rng = options?.rng ?? defaultRng
+    this.clock = options?.clock ?? realClock
     this.sessionWpm = Math.max(10, gaussian(this.rng, this.wpm, WPM_STD))
+    this.timing = new KeystrokeTiming(this.sessionWpm, this.rng)
   }
 
-  /** Per-key hold delay (keydown→keyup) sampled in the configured range. */
-  private pressOpts(): { delay: number } | undefined {
-    const { min, max } = this.keyDelay
-    if (max <= 0) return undefined
-    return { delay: this.rng() * (max - min) + min }
+  /** Type text with human-like timing, errors, and corrections. */
+  public async type(text: string): Promise<void> {
+    if (!text) return
+    const { history } = new MarkovTyper(text, this.mistakeMultiplier, this.rng).run()
+    const strokes = flatten(history)
+    const { actions, downAt } = this.timing.plan(strokes.map((s) => s.stroke))
+    await this.play(actions, (a) => {
+      if (a.stroke === undefined || a.type === 'up') return
+      const info = strokes[a.stroke]
+      const delayMs = a.stroke > 0 ? downAt[a.stroke] - downAt[a.stroke - 1] : 0
+      if (info.char === '') {
+        this.onBackspaceCallback?.()
+        return
+      }
+      this.onCharacterCallback?.(info.char, delayMs)
+      if (info.mistake) this.onMistakeCallback?.({ typedChar: info.event.chars })
+    })
   }
 
   /**
-   * Type text with human-like timing, errors, and corrections using the Markov
-   * chain simulation engine. The modeled inter-key delay (`event.dtMs`) drives
-   * the gap between keys; each keystroke is then held for a short `keyDelay`
-   * (keydown→keyup), a realistic floor that also lets async widgets (autocomplete
-   * dropdowns) react between keys even at very high wpm.
+   * Play a timeline on the absolute clock. If the input throws, every key
+   * still held is released before the error propagates.
    */
-  public async type(text: string): Promise<void> {
-    if (!text) return
-
-    // Run the full simulation upfront to get the event timeline.
-    const typer = new MarkovTyper(
-      text,
-      this.wpm,
-      this.mistakeMultiplier,
-      this.rng,
-      this.sessionWpm
-    )
-    const { history } = typer.run()
-
-    for (const event of history) {
-      await this.dispatch(event)
-    }
-  }
-
-  private async dispatch(event: TypingEvent): Promise<void> {
-    const delayMs = event.dtMs
-    if (delayMs > 0) {
-      await this.sleep(delayMs)
-    }
-
-    switch (event.kind) {
-      case 'backspace':
-        await this.input.press('Backspace')
-        this.onBackspaceCallback?.()
-        return
-
-      case 'swap':
-        for (const char of event.chars) {
-          await this.input.press(charToKey(char), this.pressOpts())
-          this.onCharacterCallback?.(char, delayMs)
+  private async play(actions: KeyAction[], onAction?: (a: KeyAction) => void): Promise<void> {
+    const start = this.clock.now()
+    const held = new Set<string>()
+    try {
+      for (const a of actions) {
+        const wait = start + a.at - this.clock.now()
+        if (wait > 0) await this.clock.sleep(wait)
+        if (a.type === 'down') {
+          await this.input.down(a.key)
+          held.add(a.key)
+        } else if (a.type === 'up') {
+          await this.input.up(a.key)
+          held.delete(a.key)
+        } else if (this.input.insertText) {
+          await this.input.insertText(a.key)
+        } else {
+          await this.input.down(a.key)
+          await this.input.up(a.key)
         }
-        this.onMistakeCallback?.({ typedChar: event.chars })
-        return
-
-      case 'error':
-        await this.input.press(charToKey(event.chars), this.pressOpts())
-        this.onMistakeCallback?.({ typedChar: event.chars })
-        this.onCharacterCallback?.(event.chars, delayMs)
-        return
-
-      case 'type':
-      case 'correct':
-        for (const char of event.chars) {
-          await this.input.press(charToKey(char), this.pressOpts())
-          this.onCharacterCallback?.(char, delayMs)
-        }
-        return
+        onAction?.(a)
+      }
+    } finally {
+      for (const key of held) await this.input.up(key).catch(() => {})
     }
   }
 
@@ -150,23 +175,15 @@ export class HumanTyper {
    * caller decides, no platform sniffing here) we hold it, press 'a', release,
    * then press Backspace once. Otherwise we press Backspace `count` times.
    */
-  public async deleteAll(options: {
-    count: number
-    selectAllModifier?: string
-  }): Promise<void> {
+  public async deleteAll(options: { count: number; selectAllModifier?: string }): Promise<void> {
     const { count, selectAllModifier } = options
-
     if (selectAllModifier) {
-      await this.input.down(selectAllModifier)
-      await this.input.press('a')
-      await this.input.up(selectAllModifier)
-      await this.input.press('Backspace')
+      await this.play(this.timing.planSelectAllDelete(selectAllModifier))
       return
     }
-
-    for (let i = 0; i < count; i++) {
-      await this.input.press('Backspace')
-    }
+    if (count <= 0) return
+    const strokes: Stroke[] = Array.from({ length: count }, () => ({ key: 'Backspace' }))
+    await this.play(this.timing.plan(strokes).actions)
   }
 
   /**
@@ -176,6 +193,7 @@ export class HumanTyper {
   public setWpm(wpm: number): void {
     this.wpm = wpm
     this.sessionWpm = Math.max(10, gaussian(this.rng, this.wpm, WPM_STD))
+    this.timing.setWpm(this.sessionWpm)
   }
 
   /** Get current WPM setting. */
@@ -183,9 +201,7 @@ export class HumanTyper {
     return this.wpm
   }
 
-  /**
-   * Update the mistake multiplier (0 = no mistakes, 1 = default, >1 = more).
-   */
+  /** Update the mistake multiplier (0 = no mistakes, 1 = default, >1 = more). */
   public setMistakeMultiplier(mult: number): void {
     this.mistakeMultiplier = mult
   }
@@ -193,9 +209,5 @@ export class HumanTyper {
   /** Get current mistake multiplier. */
   public getMistakeMultiplier(): number {
     return this.mistakeMultiplier
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
   }
 }

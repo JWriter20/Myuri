@@ -38,7 +38,7 @@ record only those (`node scripts/record-demos.mjs scroll`).
 
 ```
 ┌──────────────────────────────┐
-│  myuri core (pure, portable) │  scroll model · Markov typing · seeded RNG
+│  myuri core (pure, portable) │  scroll model · typing model · seeded RNG
 │  + cursory / cursory-js      │  recorded human mouse trajectories
 └──────────────┬───────────────┘
                │ Driver interface
@@ -132,6 +132,61 @@ async with async_playwright() as p:
 Custom driver: subclass `myuri.Driver` (or pass any object implementing the protocol) and
 hand it to `create_cursor(driver=...)`.
 
+## Typing
+
+`cursor.type()` works in two stages:
+
+1. **What gets typed.** A Markov model (from [HumanTyping](https://github.com/Lax3n/HumanTyping))
+   adds neighbor-key typos and swapped letters, then notices them and backspaces.
+2. **When each key moves.** A timing model plans every keydown and keyup on one timeline.
+   It was fitted on recorded human typing (1268 key pairs) and on English bigram
+   frequencies from [John Burkardt's NGRAMS dataset](https://people.sc.fsu.edu/~jburkardt/datasets/ngrams/ngrams.html):
+   - Common pairs are fast (`th` beats `tk`).
+   - Same-finger and row jumps are slow.
+   - Word starts, punctuation, digits and noticing a typo all pause.
+   - Shift is pressed and released on its own.
+   - About a third of keys overlap the next one (rollover), as in the recordings.
+   - `wpm` sets the mean pace (5 characters per word).
+
+The typer sends `down`/`up` itself, and `insertText` for characters no US key produces.
+Each action fires at its planned time on an absolute clock, so driver round-trips don't
+add to every gap. The old `keyDelay` setting is ignored.
+
+**Don't pace keys twice.** If the browser adds its own key timing (for example Camoufox's
+humanize keyboard channel), set that to raw while myuri types. Otherwise every gap gets
+two delays.
+
+## Scrolling
+
+`settings.scroll.device` picks what the identity scrolls with:
+
+| `device` | What the page sees | Fitted from |
+|---|---|---|
+| `trackpad` (default) | a stream of small pixel deltas about 8 ms apart, as a flick or a slower drag | recorded 120 Hz trackpad scrolls |
+| `mouse` | whole wheel notches, rolled in finger strokes with a re-grip between them | a recorded notched USB mouse on macOS |
+
+With `device: 'mouse'`, `scroll.wheel.style` sets how the wheel reports:
+- `notched` (Windows, Linux): one wheel call per notch of `pxPerNotch` (default 100). A stroke
+  rolls 1 to 6 notches over about 180 ms, and the finger re-grips for about 140 ms.
+- `macos`: 20 ms frames of `pxPerLine` (default 16) lines. Each stroke starts at one line a
+  frame and accelerates to about 10, as macOS does.
+
+A wheel can't move an exact number of pixels, so mouse scrolls land on the nearest whole notch.
+The cursor calibrates against the distance it actually sent.
+
+```ts
+const cursor = createCursor(page, { settings: { scroll: { device: 'mouse' } } })
+```
+
+```python
+cursor = create_cursor(page, settings={"scroll": {"device": "mouse"}})
+```
+
+**Camoufox:** Camoufox turns every `mouse.wheel` call into notches (100 px is one notch), so
+trackpad deltas don't survive it. Use `device: 'mouse'` with the default 100 px notches, and
+myuri's timing reaches the page one notch per call. On a macOS identity Camoufox splits each
+call into lines again, so the `macos` style gets shaped twice there.
+
 ## Determinism
 
 Both packages use a seeded Mulberry32 PRNG. Pass `seed` to reproduce identical mouse paths,
@@ -199,6 +254,9 @@ in TypeScript and Python (to within about 1e-12 px of floating-point rounding).
   [MIMIC-LOGICS](https://github.com/MIMIC-LOGICS/), for
   [Mouse-Synthesizer](https://github.com/MIMIC-LOGICS/Mouse-Synthesizer): the recordings
   behind cursory's trajectory database.
+- [John Burkardt](https://people.sc.fsu.edu/~jburkardt/), for the
+  [NGRAMS](https://people.sc.fsu.edu/~jburkardt/datasets/ngrams/ngrams.html) English letter
+  frequencies behind the typing rhythm.
 
 ## License
 
@@ -207,4 +265,5 @@ closed-source projects. If you distribute a modified myuri, its source has to st
 available under the same license.
 
 cursory is © Vinyzu, dual-licensed under LGPLv3-or-later and GPLv3-or-later; cursory-js is
-LGPLv3-or-later. myuri depends on them and doesn't redistribute them. See [`NOTICE`](NOTICE).
+LGPLv3-or-later. myuri depends on them and doesn't redistribute them. The embedded bigram
+table is derived from John Burkardt's LGPL NGRAMS dataset. See [`NOTICE`](NOTICE).
