@@ -15,6 +15,8 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Optional
 
+from ..target_os import primary_modifier
+
 # Deep in-page snippet used by the default clipboard implementation.
 _SET_CLIPBOARD_JS = """
 (text) => {
@@ -38,6 +40,11 @@ _IS_MAC_JS = "() => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.user
 class Driver(ABC):
     """Abstract async driver. Required members are abstract; optional members
     have working defaults built on :meth:`evaluate`."""
+
+    os: Optional[str] = None
+    """The OS the browser claims (the Cursor sets it from its ``os``): the
+    default :meth:`insert_text` pastes with its modifier. Without it, the
+    modifier is read from the page's ``navigator.platform``."""
 
     # ---- input primitives (required) ----
     @abstractmethod
@@ -77,11 +84,13 @@ class Driver(ABC):
         await self.evaluate(_SET_CLIPBOARD_JS, text)
 
     async def insert_text(self, text: str) -> None:
-        # No native insert: place on the clipboard and paste with the *browser's*
-        # platform modifier (detected in-page, not from the automation host).
+        # No native insert: place on the clipboard and paste with the platform
+        # modifier, the *browser's* platform, not the automation host's.
         await self.set_clipboard(text)
-        is_mac = await self.evaluate(_IS_MAC_JS, None)
-        mod = "Meta" if is_mac else "Control"
+        if self.os is not None:
+            mod = primary_modifier(self.os)
+        else:
+            mod = "Meta" if await self.evaluate(_IS_MAC_JS, None) else "Control"
         await self.down(mod)
         await self.press("v")
         await self.up(mod)
@@ -199,10 +208,12 @@ def define_driver(
     dispose: Optional[AsyncFn] = None,
     mouse_down: Optional[AsyncFn] = None,
     mouse_up: Optional[AsyncFn] = None,
+    os: Optional[str] = None,
 ) -> Driver:
     """Assemble a :class:`Driver` from callables. Only the input primitives and
-    ``evaluate`` are required; the rest get sensible defaults."""
-    return _FunctionDriver(
+    ``evaluate`` are required; the rest get sensible defaults. ``os`` is
+    :attr:`Driver.os`."""
+    driver = _FunctionDriver(
         move=move,
         click=click,
         down=down,
@@ -217,3 +228,5 @@ def define_driver(
         mouse_down=mouse_down,
         mouse_up=mouse_up,
     )
+    driver.os = os
+    return driver

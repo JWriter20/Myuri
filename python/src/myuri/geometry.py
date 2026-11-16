@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Union
+from typing import List, NamedTuple, Optional, Sequence, Union
 
 from cursory import generate_trajectory
 
@@ -197,12 +197,65 @@ def _js_round(v: float) -> float:
     return math.floor(v + 0.5)
 
 
-def _ensure_terminal_point(path_points: List[TimedVector], end: Vector) -> List[TimedVector]:
-    """Force the last point of the path to land exactly on ``end``."""
-    if not path_points:
-        return []
-    last = path_points[-1]
-    return path_points[:-1] + [TimedVector(x=end.x, y=end.y, timestamp=last.timestamp)]
+# A mouse reports its position about every 10 ms, whatever the OS: a USB mouse
+# on a Mac, which shows every report, gave 3588 pointermoves while moving
+# 8.8/10/11.1 ms apart (p10/50/90), lognormal mu 2.303, sd 0.091 (log median,
+# 10-90% span / 2.563). Where the OS coalesces reports into display frames
+# (Windows) and stamps them on its timer grid, the browser does that, not the
+# planner.
+REPORT_MU = 2.303
+REPORT_SD = 0.091
+REPORT_MS = 10
+
+
+class PlannedPoint(NamedTuple):
+    """A point of a planned move, ``t`` ms after the move starts."""
+
+    x: float
+    y: float
+    t: float
+
+
+def trajectory(
+    start: Vector,
+    end: Vector,
+    options: Optional[PathOptions],
+    rng: Rng,
+) -> List[PlannedPoint]:
+    """One human-like stroke from ``start`` to ``end``, one point a mouse
+    report; the last is exactly ``end``."""
+    distance = math.hypot(end.x - start.x, end.y - start.y)
+    move_speed = options.move_speed if options is not None else None
+    speed_factor = 1 / move_speed if move_speed is not None and move_speed > 0 else 1.0
+    if distance < 100:
+        small_movement_boost = 1.5 + 1.5 * (1 - distance / 100)
+        speed_factor = speed_factor / small_movement_boost
+    # cursory draws from its own numpy generator, so hand it a seed pulled from our
+    # stream: same myuri seed -> same trajectory, in Python and JS (cursory-js).
+    # Its timings are scaled by speed_factor afterwards, so ask for one sample a report.
+    points, timings = generate_trajectory(
+        (start.x, start.y),
+        (end.x, end.y),
+        frequency=(1000 / REPORT_MS) * speed_factor,
+        frequency_randomizer=1,
+        seed=math.floor(rng() * 0x100000000),
+    )
+    times = [t * speed_factor for t in timings]
+    total = times[-1]
+    # Read the path where the pointer is at each report; the first report after it stops is ``end``.
+    out: List[PlannedPoint] = []
+    j = 0
+    t = math.exp(gaussian(rng, REPORT_MU, REPORT_SD))
+    while t < total:
+        while times[j + 1] <= t:
+            j += 1
+        a = (t - times[j]) / (times[j + 1] - times[j])
+        x = points[j][0] + a * (points[j + 1][0] - points[j][0])
+        y = points[j][1] + a * (points[j + 1][1] - points[j][1])
+        out.append(PlannedPoint(max(0.0, x), max(0.0, y), t))
+        t += math.exp(gaussian(rng, REPORT_MU, REPORT_SD))
+    out.append(PlannedPoint(end.x, end.y, t))
+    return out
 
 
 def path(
@@ -212,38 +265,12 @@ def path(
     rng: Rng,
 ) -> List[TimedVector]:
     """Generate a timed, human-like path from ``start`` to a point or box."""
-    opts = options if options is not None else PathOptions()
     if isinstance(end, BoundingBox):
         end_point = Vector(end.x + end.width / 2, end.y + end.height / 2)
     else:
         end_point = end
-
-    distance = math.hypot(end_point.x - start.x, end_point.y - start.y)
-    # cursory draws from its own numpy generator, so hand it a seed pulled from our
-    # stream: same myuri seed -> same trajectory, in Python and JS (cursory-js).
-    raw, timings = generate_trajectory(
-        (start.x, start.y),
-        (end_point.x, end_point.y),
-        frequency=60,
-        frequency_randomizer=1,
-        seed=math.floor(rng() * 0x100000000),
-    )
-    points = [Vector(x, y) for x, y in raw]
-
-    speed_factor = (
-        1 / opts.move_speed if opts.move_speed is not None and opts.move_speed > 0 else 1.0
-    )
-    if distance < 100:
-        small_movement_boost = 1.5 + 1.5 * (1 - distance / 100)
-        speed_factor = speed_factor / small_movement_boost
-
     start_time = time.time() * 1000
-    timed = [
-        TimedVector(
-            x=max(0.0, p.x),
-            y=max(0.0, p.y),
-            timestamp=start_time + _js_round(timings[i] * speed_factor),
-        )
-        for i, p in enumerate(points)
+    return [
+        TimedVector(x=p.x, y=p.y, timestamp=start_time + _js_round(p.t))
+        for p in trajectory(start, end_point, options, rng)
     ]
-    return _ensure_terminal_point(timed, end_point)

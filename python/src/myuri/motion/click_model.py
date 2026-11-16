@@ -2,10 +2,11 @@
 
 Python mirror of ``js/src/motion/click-model.ts`` (the source of truth; the
 draw order is identical, so a seed gives the same clicks in both languages).
-Fitted from four recordings of people clicking in Firefox, all lognormal in
-milliseconds: hold mu 4.58 sd 0.258 (median 97); last move -> press mu 3.364
-sd 0.935 (median 29); double/triple click up -> next down mu 4.473 sd 0.264
-(median 88). See the TypeScript module for the per-machine numbers.
+Fitted from a recording of a person clicking in Firefox with a notched USB
+mouse, all lognormal in milliseconds: hold mu 4.533 sd 0.21 (median 93); last
+move -> press mu 3.717 sd 1.341 (median 41); double/triple click up -> next
+down mu 4.353 sd 0.113 (median 78). See the TypeScript module for the fit and
+the drag figures.
 """
 from __future__ import annotations
 
@@ -16,11 +17,11 @@ from ..rng import gaussian
 
 Rng = Callable[[], float]
 
-_HOLD = (4.58, 0.258, 35, 400)
-_DWELL = (3.364, 0.935, 4, 600)
-_MULTI_GAP = (4.473, 0.264, 30, 250)
-_DRAG_START = (4.548, 0.566, 20, 500)
-_DRAG_END = (3.555, 1.2, 0, 600)
+_HOLD = (4.533, 0.21, 35, 400)
+_DWELL = (3.717, 1.341, 4, 600)
+_MULTI_GAP = (4.353, 0.113, 30, 250)
+_DRAG_START = (3.58, 1.004, 4, 500)
+_DRAG_END = (3.182, 2.104, 0, 600)
 
 
 def _js_round(x: float) -> int:

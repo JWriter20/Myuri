@@ -62,7 +62,7 @@
     "anti-detection"
   ],
   "dependencies": {
-    "cursory-js": "^2.0.2"
+    "cursory-js": "^2.1.0"
   },
   "peerDependencies": {
     "playwright-core": ">=1.40.0"

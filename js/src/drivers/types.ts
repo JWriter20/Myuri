@@ -1,4 +1,5 @@
 import { type BoundingBox, type ViewportSize } from '../math.js'
+import { primaryModifier, type Os } from '../target-os.js'
 
 /** Mouse button for `click`. */
 export type MouseButton = 'left' | 'right' | 'middle'
@@ -93,7 +94,12 @@ function missing(name: string): () => Promise<void> {
   }
 }
 
-export function defineDriver(driver: Driver): ResolvedDriver {
+/**
+ * `os` is the OS the browser claims: the default `insertText` pastes with its
+ * modifier. Without it, the modifier is read from the page's
+ * `navigator.platform`.
+ */
+export function defineDriver(driver: Driver, options: { os?: Os } = {}): ResolvedDriver {
   const setClipboard =
     driver.setClipboard?.bind(driver) ??
     (async (text: string): Promise<void> => {
@@ -123,14 +129,14 @@ export function defineDriver(driver: Driver): ResolvedDriver {
     driver.insertText?.bind(driver) ??
     (async (text: string): Promise<void> => {
       // No native insert: place on the clipboard and paste with the platform
-      // modifier. Platform is detected in-page (the *browser's* platform),
-      // not from the automation host's OS.
+      // modifier, the *browser's* platform, not the automation host's.
       await setClipboard(text)
-      const isMac = await driver.evaluate(
-        () => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent),
-        null,
-      )
-      const mod = isMac ? 'Meta' : 'Control'
+      const mod =
+        options.os !== undefined
+          ? primaryModifier(options.os)
+          : (await driver.evaluate(() => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent), null))
+            ? 'Meta'
+            : 'Control'
       await driver.down(mod)
       await driver.press('v')
       await driver.up(mod)

@@ -39,6 +39,33 @@ export {
   resolveSettings,
 } from './settings.js'
 
+// The OS the browser claims: the shortcut modifier, the move cadence and the wheel.
+export { type Os, primaryModifier } from './target-os.js'
+
+// Pure planners: what a Cursor would do, without a browser.
+export {
+  planMove,
+  planPoint,
+  planClick,
+  planType,
+  planPress,
+  planSelectAll,
+  planWheel,
+  SCROLL_PLAN_JS,
+  SCROLL_FINISH_POSITION,
+  SCROLL_PAD,
+  SCROLL_EDGE,
+  type PlannedPoint,
+  type PlanMoveOptions,
+  type ClickPlan,
+  type KeyStep,
+  type PlanTypeOptions,
+  type WheelStep,
+  type PlanWheelOptions,
+  type ScrollPlan,
+  type ScrollPlanArgs,
+} from './plan.js'
+
 // Seed -> behavioral profile (the "behavioral fingerprint").
 export { generateProfile } from './profile.js'
 

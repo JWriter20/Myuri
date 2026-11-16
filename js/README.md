@@ -65,6 +65,19 @@ The `Driver` needs input primitives (`move`, `click`, `down`, `up`, `wheel`, `pr
 plus one query seam, `evaluate(fn, arg)`, which every DOM measurement is built on.
 Optional `insertText`/`setClipboard`/`isClosed`/`dispose` get sensible defaults.
 
+## The identity's OS
+
+`createCursor(page, { os: 'macos' | 'windows' | 'linux' })` matches the input to the OS the
+browser claims: the paste and select-all modifier (Cmd on macOS, Ctrl elsewhere), whether a
+move repeats the position the pointer is already on (only on macOS), the mouse wheel style,
+and which axis a Shift+wheel scroll carries. How long a person takes is the same on every OS.
+
+## Planning without a browser
+
+`planMove`, `planPoint`, `planClick`, `planType`, `planPress`, `planSelectAll` and `planWheel`
+return the timelines a `Cursor` plays, from an `rng` such as `makeRng(seed)`; the Cursor is
+built on them. See the [project README](https://github.com/JWriter20/Myuri#planning-without-a-browser).
+
 ## Determinism
 
 Seeded Mulberry32 PRNG — the **same seed produces the same numbers as the Python

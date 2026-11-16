@@ -10,7 +10,7 @@ import time
 import pytest
 
 from myuri import Cursor, ScrollOptions, TypeOptions
-from myuri import cursor as cursor_module
+from myuri.motion.scroll_model import scroll_model
 from myuri.drivers.base import Driver
 
 RECT = {"x": 100, "y": 100, "width": 200, "height": 50}
@@ -177,14 +177,14 @@ async def test_scroll_keeps_model_timing_when_wheel_acks_take_a_frame(monkeypatc
     # A real browser acknowledges a wheel event only on its next frame. Awaiting
     # each one used to stretch gestures planned at ~8 ms cadence to 1.5-2x.
     gestures = []
-    generate = cursor_module.scroll_model.generate_scroll_path
+    generate = scroll_model.generate_scroll_path
 
     def record(*args, **kwargs):
         events = generate(*args, **kwargs)
         gestures.append(events)
         return events
 
-    monkeypatch.setattr(cursor_module.scroll_model, "generate_scroll_path", record)
+    monkeypatch.setattr(scroll_model, "generate_scroll_path", record)
     d = SlowWheelDriver()
     cursor = Cursor(d, seed=8, settings={"scroll": {"speed_factor": 1}})
     await cursor.scroll("#target", ScrollOptions(max_tries=1))
@@ -203,14 +203,14 @@ async def test_scroll_uses_the_profile_speed_factor(monkeypatch):
     # scroll() without options must pace by the seed's profile, like JS does
     # (it used to fall back to 1, ignoring the profile).
     gestures = []
-    generate = cursor_module.scroll_model.generate_scroll_path
+    generate = scroll_model.generate_scroll_path
 
     def record(*args, **kwargs):
         events = generate(*args, **kwargs)
         gestures.append(events)
         return events
 
-    monkeypatch.setattr(cursor_module.scroll_model, "generate_scroll_path", record)
+    monkeypatch.setattr(scroll_model, "generate_scroll_path", record)
     d = SlowWheelDriver()
     cursor = Cursor(d, seed=3)  # profile speed_factor ~0.81
     speed_factor = cursor.get_settings().scroll.speed_factor

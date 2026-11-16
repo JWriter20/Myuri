@@ -23,7 +23,7 @@ import asyncio
 import random
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Protocol
+from typing import Callable, List, Optional, Protocol, Tuple
 
 from ..rng import gaussian
 from .config import DEFAULT_WPM, WPM_STD
@@ -99,6 +99,20 @@ def _flatten(history: List[TypingEvent]) -> List[_StrokeInfo]:
     return out
 
 
+def draw_session_wpm(rng: Rng, wpm: float) -> float:
+    """A session's typing speed, drawn around ``wpm``."""
+    return max(10.0, gaussian(rng, wpm, WPM_STD))
+
+
+def plan_typing(
+    text: str, mistake_multiplier: float, rng: Rng, timing: KeystrokeTiming
+) -> Tuple[List[_StrokeInfo], List[KeyAction], List[float]]:
+    """What typing ``text`` presses (typos and corrections included) and when."""
+    strokes = _flatten(MarkovTyper(text, mistake_multiplier, rng).run().history)
+    actions, down_at = timing.plan([s.stroke for s in strokes])
+    return strokes, actions, down_at
+
+
 class HumanTyper:
     def __init__(
         self,
@@ -122,16 +136,14 @@ class HumanTyper:
         self._clock: TypingClock = clock if clock is not None else real_clock
         # Per-session typing speed, sampled ONCE so every field this typer
         # fills shares one natural speed.
-        self._session_wpm = max(10.0, gaussian(self._rng, self._wpm, WPM_STD))
+        self._session_wpm = draw_session_wpm(self._rng, self._wpm)
         self._timing = KeystrokeTiming(self._session_wpm, self._rng)
 
     async def type(self, text: str) -> None:
         """Type text with human-like timing, errors, and corrections."""
         if not text:
             return
-        history = MarkovTyper(text, self._mistake_multiplier, self._rng).run().history
-        strokes = _flatten(history)
-        actions, down_at = self._timing.plan([s.stroke for s in strokes])
+        strokes, actions, down_at = plan_typing(text, self._mistake_multiplier, self._rng, self._timing)
 
         def on_action(a: KeyAction) -> None:
             if a.stroke is None or a.type == "up":
@@ -200,7 +212,7 @@ class HumanTyper:
     def set_wpm(self, wpm: float) -> None:
         """Update the typing speed; re-rolls the per-session speed around it."""
         self._wpm = wpm
-        self._session_wpm = max(10.0, gaussian(self._rng, self._wpm, WPM_STD))
+        self._session_wpm = draw_session_wpm(self._rng, self._wpm)
         self._timing.set_wpm(self._session_wpm)
 
     def get_wpm(self) -> float:

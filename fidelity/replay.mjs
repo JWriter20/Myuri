@@ -2,7 +2,7 @@
 // with recordings of a person doing the same 45 tasks (see compare.py).
 //
 // usage: node fidelity/replay.mjs RECORDER_HTML OUT_DIR [--firefox PATH] [--seed N]
-//        [--wheel macos|notched] [--dpr N] [--width W --height H]
+//        [--os macos|windows|linux] [--dpr N] [--width W --height H]
 //
 // RECORDER_HTML is record_human_input.html. OUT_DIR gets events.ndjson.gz and
 // device.json in the recorder's own format. Needs js/ built (npm run build).
@@ -26,7 +26,7 @@ const flag = (name, dflt) => {
 }
 const firefoxPath = flag('firefox', undefined)
 const seed = Number(flag('seed', '1'))
-const wheelStyle = flag('wheel', 'macos')
+const os = flag('os', 'macos')
 const dpr = Number(flag('dpr', '2'))
 const width = Number(flag('width', '1280'))
 const height = Number(flag('height', '955'))
@@ -40,7 +40,7 @@ const raw = path.join(outDir, 'events.ndjson')
 fs.rmSync(raw, { force: true })
 const PAGE = fs.readFileSync(pagePath)
 const device = {
-  driver: { tool: 'myuri', seed, wheelStyle, dpr, viewport: [width, height] },
+  driver: { tool: 'myuri', seed, os, dpr, viewport: [width, height] },
   prefs: { 'privacy.reduceTimerPrecision': false },
   skipped: [],
 }
@@ -82,7 +82,8 @@ const context = await browser.newContext({ viewport: { width, height }, deviceSc
 const page = await context.newPage()
 const cursor = myuri.createCursor(page, {
   seed,
-  settings: { scroll: { device: 'mouse', wheel: { style: wheelStyle } } },
+  os,
+  settings: { scroll: { device: 'mouse' } },
 })
 const rng = myuri.makeRng(seed + 7)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -98,16 +99,14 @@ async function until(pred, ms = 60000) {
   return false
 }
 
-/** A wheel gesture planned by myuri's wheel model, played like Cursor plays it. */
-// Sent on the model's clock without awaiting each event, as Cursor.scroll does.
-async function wheel(px, axis = 'y') {
+/** A wheel gesture from planWheel, sideways with Shift held: sent on its clock without awaiting each event, as Cursor.scroll does. */
+async function wheel(px, sideways) {
   const sent = []
   const start = Date.now()
-  let due = 0
-  for (const e of myuri.generateWheelPath(px, rng, { style: wheelStyle })) {
-    sent.push(axis === 'y' ? page.mouse.wheel(0, e.deltaY) : page.mouse.wheel(e.deltaY, 0))
-    due += e.deltaTime
-    await sleep(start + due - Date.now())
+  for (const step of myuri.planWheel(sideways ? px : 0, sideways ? 0 : px, rng, { os, device: 'mouse' })) {
+    await sleep(start + step[3] - Date.now())
+    if (step[0] === 'key') sent.push(step[2] === 'down' ? page.keyboard.down(step[1]) : page.keyboard.up(step[1]))
+    else sent.push(page.mouse.wheel(step[1], step[2]))
   }
   await Promise.all(sent)
 }
@@ -118,14 +117,12 @@ async function notches(n, notchPx, { nested = false, shift = false } = {}) {
   for (let rep = 1; rep <= n; rep++) {
     await until(async () => (await say()).includes(`(${rep} of ${n})`))
     await sleep(rand(250, 700))
-    if (shift) await page.keyboard.down('Shift')
-    await wheel(rng() < 0.5 || rep % 2 ? notchPx : -notchPx)
-    if (shift) await page.keyboard.up('Shift')
+    await wheel(rng() < 0.5 || rep % 2 ? notchPx : -notchPx, shift)
     await until(async () => !(await say()).includes(`(${rep} of ${n})`), 6000)
   }
 }
 
-const line = wheelStyle === 'macos' ? 16 : 100
+const line = os === 'macos' ? 16 : 100
 const TASKS = {
   async about() {
     await cursor.type('USB mouse', '#mouse')

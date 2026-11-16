@@ -4,19 +4,19 @@ Python mirror of ``js/src/motion/wheel-model.ts`` (the source of truth; the
 draw order is identical, so a seed gives the same wheel in both languages).
 
 A trackpad reports a stream of small pixel deltas. A mouse wheel turns in
-notches: the finger rolls the wheel a few notches (a stroke), lifts, re-grips
-and rolls again. Two styles:
+notches: the finger flicks the wheel through some notches (a stroke), lifts,
+re-grips and flicks again. Two styles:
 
-- ``notched`` (Windows, Linux): one event per notch, each ``px_per_notch``
-  (default 100, which Camoufox turns into exactly one 3-line notch).
+- ``notched`` (Windows, Linux): one event a notch, each ``px_per_notch``
+  (default 100, which Camoufox turns into exactly one 3-line notch). The page
+  takes a fast flick's notches one display frame at a time, so the notches that
+  land in one 60 Hz frame arrive as one event of 2-4 notches.
 - ``macos``: macOS reports the wheel in 20 ms frames and accelerates a fast
   roll. A stroke starts at one line a frame and climbs to ~10, ``px_per_line``
   (default 16) each.
 
-Fitted from a recorded notched USB mouse (Keychron M6) on macOS, Firefox, 1666
-wheel events; see the TypeScript module for the fits. The notch count of a
-``notched`` stroke (2-6) is a physical estimate: macOS hides individual notches
-inside its frames.
+``notched`` is fitted from a notched USB mouse on Windows and ``macos`` from
+one on macOS, both in Firefox; see the TypeScript module for the fits.
 """
 
 from __future__ import annotations
@@ -38,10 +38,14 @@ REGRIP_SD = 0.563
 REGRIP_MIN_MS = 50
 REGRIP_MAX_MS = 600
 LONE_NOTCH_PROBABILITY = 0.33
-MIN_NOTCHES = 2
-MAX_NOTCHES = 6
-NOTCH_JITTER_MS = 3
-MIN_NOTCH_GAP_MS = 8
+
+NOTCHES_MU = 2.833
+NOTCHES_SD = 0.27
+FLICK_MU = 5.064
+FLICK_SD = 0.18
+FLICK_REGRIP_MU = 4.258
+FLICK_REGRIP_SD = 0.446
+FRAME_MS = 1000 / 60
 
 MAC_FRAME_MS = 20
 MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -67,48 +71,32 @@ def _lognormal(rng: Rng, mu: float, sd: float) -> float:
     return math.exp(gaussian(rng, mu, sd))
 
 
-def _min_jerk(tau: float) -> float:
-    return tau * tau * tau * (10 - 15 * tau + 6 * tau * tau)
-
-
-def _min_jerk_inverse(s: float) -> float:
-    lo, hi = 0.0, 1.0
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if _min_jerk(mid) < s:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
-
-
-def _stroke_sizes(total: int, rng: Rng) -> List[int]:
-    sizes: List[int] = []
-    left = total
-    while left > 0:
-        if rng() < LONE_NOTCH_PROBABILITY:
-            n = 1
-        else:
-            n = MIN_NOTCHES + math.floor(rng() * (MAX_NOTCHES - MIN_NOTCHES + 1))
-        sizes.append(min(n, left))
-        left -= sizes[-1]
-    return sizes
-
-
 def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEvent]:
     sign = _sign(target)
-    total = max(1, _js_round(abs(target) / px_per_notch))
-    events: List[ScrollEvent] = []
-    for n in _stroke_sizes(total, rng):
-        duration = _clamp(_lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
-        times = [duration * _min_jerk_inverse((i + 0.5) / n) for i in range(n)]
+    left = max(1, _js_round(abs(target) / px_per_notch))
+    # Each event's [frame, notch count]; the notches of one frame are one event.
+    frames: List[List[int]] = []
+    start = 0.0
+    while left > 0:
+        n = min(left, max(1, _js_round(_lognormal(rng, NOTCHES_MU, NOTCHES_SD))))
+        duration = _clamp(_lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+        regrip = _clamp(_lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+        last = start
         for i in range(n):
-            if i + 1 < n:
-                gap = max(MIN_NOTCH_GAP_MS, times[i + 1] - times[i] + gaussian(rng, 0, NOTCH_JITTER_MS))
+            last = start + duration * (1 - math.sqrt(1 - (i + 0.5) / n))
+            frame = _js_round(last / FRAME_MS)
+            if frames and frames[-1][0] == frame:
+                frames[-1][1] += 1
             else:
-                gap = _clamp(_lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
-            events.append(ScrollEvent(delta_time=_js_round(gap), delta_y=sign * px_per_notch))
-    return events
+                frames.append([frame, 1])
+        left -= n
+        start = last + regrip
+
+    # The last event waits out the final re-grip.
+    def at(i: int) -> int:
+        return _js_round(frames[i][0] * FRAME_MS if i < len(frames) else start)
+
+    return [ScrollEvent(delta_time=at(i + 1) - at(i), delta_y=sign * notches * px_per_notch) for i, (_, notches) in enumerate(frames)]
 
 
 def _mac_path(target: float, rng: Rng, px_per_line: int) -> List[ScrollEvent]:

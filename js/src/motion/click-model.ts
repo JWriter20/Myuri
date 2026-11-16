@@ -3,44 +3,49 @@ import { gaussian } from '../rng.js'
 
 /**
  * Mouse-button timing: how long a press is held, how long the hand rests
- * between the end of a movement and the press, and the gap between the clicks
- * of a double or triple click.
+ * between the end of a movement and the press, the gap between the clicks of
+ * a double or triple click, and the pauses around a drag.
  *
- * Fitted from four recordings of people doing the same click tasks in Firefox
- * (two Macs and one Windows PC at DPR 1.5 and 1), 330 single clicks and 38 multi-click gaps, all
- * lognormal in milliseconds:
- *  - hold (pointerdown -> pointerup): mu 4.58, sd 0.258, median 97 ms
- *    (per machine 94-109; p5 63, p95 156);
- *  - last mousemove -> pointerdown: mu 3.364, sd 0.935, median 29 ms
- *    (p5 8, p95 154). The cursor often stops, then presses a beat later;
- *  - double/triple click, pointerup -> next pointerdown: mu 4.473, sd 0.264,
- *    median 88 ms (p10 63, p90 110);
- *  - drag (39 drags of cards, a box and a slider): press -> first move mu
- *    4.548, sd 0.566, median 94 ms; last move -> release median 35 ms with a
- *    very wide spread (recorded sd 1.73, partly 0 ms; we draw sd 1.2).
+ * Fitted from a recording of a person doing click tasks in Firefox with a
+ * notched USB mouse on a Mac. Recordings made with a trackpad or touchpad are
+ * left out: pressing a pad is not pressing a button (a touchpad drag starts a
+ * median 160 ms after the press, a mouse drag 36 ms). How long a click is held
+ * is the same on all of them (median 93-109 ms), on macOS and Windows alike.
+ * Each value is a lognormal in milliseconds with mu at the log median and sd
+ * from the 10%-90% quantile span (/2.563), which a few stalled presses cannot
+ * drag:
+ *  - hold (pointerdown -> pointerup), 110 clicks: mu 4.533, sd 0.21, median
+ *    93 ms (p10 68, p90 115);
+ *  - last pointermove -> pointerdown, 89 clicks: mu 3.717, sd 1.341, median
+ *    41 ms (p10 6, p90 259). The cursor often stops, then presses a beat later;
+ *  - double/triple click, pointerup -> next pointerdown, 11 gaps: mu 4.353,
+ *    sd 0.113, median 78 ms (p10 76, p90 101);
+ *  - 16 drags of cards, a box and a slider: press -> first move mu 3.58,
+ *    sd 1.004, median 36 ms (p10 7, p90 100); last move -> release mu 3.182,
+ *    sd 2.104, median 24 ms (p10 1, p90 246).
  * Draw order matches `myuri/motion/click_model.py`.
  */
 
-const HOLD_MU = 4.58
-const HOLD_SD = 0.258
+const HOLD_MU = 4.533
+const HOLD_SD = 0.21
 const HOLD_MIN_MS = 35
 const HOLD_MAX_MS = 400
-const DWELL_MU = 3.364
-const DWELL_SD = 0.935
+const DWELL_MU = 3.717
+const DWELL_SD = 1.341
 const DWELL_MIN_MS = 4
 const DWELL_MAX_MS = 600
-const DRAG_START_MU = 4.548
-const DRAG_START_SD = 0.566
-const DRAG_START_MIN_MS = 20
+const DRAG_START_MU = 3.58
+const DRAG_START_SD = 1.004
+const DRAG_START_MIN_MS = 4
 const DRAG_START_MAX_MS = 500
-const DRAG_END_MU = 3.555
-const DRAG_END_SD = 1.2
+const DRAG_END_MU = 3.182
+const DRAG_END_SD = 2.104
 const DRAG_END_MIN_MS = 0
 const DRAG_END_MAX_MS = 600
 const DRAG_CARRY_MU = -0.288 // ln 0.75
 const DRAG_CARRY_SD = 0.25
-const MULTI_GAP_MU = 4.473
-const MULTI_GAP_SD = 0.264
+const MULTI_GAP_MU = 4.353
+const MULTI_GAP_SD = 0.113
 const MULTI_GAP_MIN_MS = 30
 const MULTI_GAP_MAX_MS = 250
 
