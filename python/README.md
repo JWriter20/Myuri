@@ -1,3 +1,5 @@
+<p align="center"><img src="https://cdn.jsdelivr.net/npm/myuri/myuri.png" width="160" alt="myuri"></p>
+
 # myuri (Python)
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.

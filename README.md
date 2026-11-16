@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/media/myuri.png" width="160" alt="myuri"></p>
+
 # myuri
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
@@ -63,7 +65,7 @@ Convenience wrappers ship for the common cases, so most users inject nothing.
 ## TypeScript
 
 ```ts
-import { createCursor } from '@jobharvest/myuri'
+import { createCursor } from 'myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -82,7 +84,7 @@ await cursor.dispose()          // detaches CDP sessions, clears timers
 Bring your own driver:
 
 ```ts
-import { createCursor, defineDriver } from '@jobharvest/myuri'
+import { createCursor, defineDriver } from 'myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
@@ -107,7 +109,7 @@ const cursor = createCursor({
 Prebuilt wrappers:
 
 ```ts
-import { playwrightDriver, cdpDriver, puppeteerDriver } from '@jobharvest/myuri/drivers'
+import { playwrightDriver, cdpDriver, puppeteerDriver } from 'myuri/drivers'
 const cursor = createCursor({ driver: cdpDriver(page) })
 ```
 
@@ -200,7 +202,7 @@ mistypes, how aggressively it overshoots, how quickly it scrolls. When you const
 cursor with a `seed` and no explicit `settings`, that profile is applied automatically:
 
 ```ts
-import { createCursor, generateProfile } from '@jobharvest/myuri'
+import { createCursor, generateProfile } from 'myuri'
 
 const cursor = createCursor(page, { seed: 1234 }) // profile derived from 1234
 cursor.getSettings()                              // inspect the resolved traits
@@ -223,9 +225,9 @@ wins over the derived profile.
 
 | Path | What |
 |------|------|
-| `js/` | npm package `@jobharvest/myuri` (private) |
-| `python/` | Python package `myuri` (private; git-installed) |
-| `docs/media/` | demo GIFs used in this README |
+| `js/` | npm package [`myuri`](https://www.npmjs.com/package/myuri) |
+| `python/` | PyPI package [`myuri`](https://pypi.org/project/myuri/) |
+| `docs/media/` | the icon and the demo GIFs used in this README |
 
 ## Mouse trajectories: cursory
 
@@ -236,7 +238,7 @@ requested endpoints.
 
 | Package | Uses |
 |---|---|
-| `@jobharvest/myuri` (TypeScript) | [`cursory-js`](https://github.com/JWriter20/cursory-js), a TypeScript port of cursory |
+| `myuri` (TypeScript) | [`cursory-js`](https://github.com/JWriter20/cursory-js), a TypeScript port of cursory |
 | `myuri` (Python) | [`cursory`](https://pypi.org/project/cursory/), the original |
 
 cursory-js reproduces cursory's numpy random stream bit for bit. myuri gives both libraries

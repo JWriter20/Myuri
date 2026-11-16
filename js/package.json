@@ -1,5 +1,5 @@
 {
-  "name": "@jobharvest/myuri",
+  "name": "myuri",
   "version": "3.0.3",
   "description": "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, Puppeteer, or custom).",
   "homepage": "https://github.com/JWriter20/Myuri#readme",
@@ -12,7 +12,7 @@
     "directory": "js"
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "license": "LGPL-3.0-or-later",
   "author": "Jake Writer",
@@ -36,7 +36,8 @@
   "files": [
     "dist",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "myuri.png"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -44,7 +45,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
-    "prepack": "node -e \"for (const f of ['LICENSE','NOTICE']) require('fs').copyFileSync('../'+f, f)\""
+    "prepack": "node -e \"const fs=require('fs');for (const f of ['LICENSE','NOTICE']) fs.copyFileSync('../'+f, f);fs.copyFileSync('../docs/media/myuri.png','myuri.png')\""
   },
   "keywords": [
     "playwright",

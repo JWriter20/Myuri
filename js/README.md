@@ -1,3 +1,5 @@
+<p align="center"><img src="https://cdn.jsdelivr.net/npm/myuri/myuri.png" width="160" alt="myuri"></p>
+
 # myuri
 
 Human-like browser **cursor, keyboard, and scroll** simulation — driver-agnostic.
@@ -8,13 +10,13 @@ not talk to a browser itself — you inject a small **Driver**, so it works with
 Playwright, Puppeteer, raw CDP, or anything you can wrap.
 
 ```bash
-npm install @jobharvest/myuri
+npm install myuri
 ```
 
 ## Quick start (Playwright)
 
 ```ts
-import { createCursor } from '@jobharvest/myuri'
+import { createCursor } from 'myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -31,7 +33,7 @@ await cursor.dispose()
 ## Bring your own driver
 
 ```ts
-import { createCursor, defineDriver } from '@jobharvest/myuri'
+import { createCursor, defineDriver } from 'myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
@@ -51,14 +53,14 @@ const cursor = createCursor({
 `fromPlaywright` / `fromCDP` / `fromPuppeteer` turn a page into a driver:
 
 ```ts
-import { createCursor, fromPlaywright, fromCDP } from '@jobharvest/myuri'
+import { createCursor, fromPlaywright, fromCDP } from 'myuri'
 
 const cursor = createCursor(fromPlaywright(page), { seed: 1234 })
 // or let createCursor infer the driver from a raw page:
 const cursor2 = createCursor(page, { seed: 1234 })
 ```
 
-(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `@jobharvest/myuri/drivers` are
+(`playwrightDriver`/`cdpDriver`/`puppeteerDriver` from `myuri/drivers` are
 the same functions under descriptive names.)
 
 The `Driver` needs input primitives (`move`, `click`, `down`, `up`, `wheel`, `press`)

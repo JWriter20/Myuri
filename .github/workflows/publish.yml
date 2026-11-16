@@ -4,14 +4,20 @@ name: Publish
 # Conventional-Commit subjects since the last `myuri-v*` tag — `!`/BREAKING → major,
 # `feat` → minor, anything else → patch (patch is the floor, so every merge ships) —
 # then publishes both packages at that version and records it back:
-#   - npm  (@jobharvest/myuri, restricted): tokenless via OIDC trusted publishing
-#   - python: wheel attached to a GitHub Release on this private repo
-#     (pip install "git+https://github.com/JWriter20/Myuri.git@myuri-v<ver>#subdirectory=python")
+#   - npm  (myuri, public): tokenless via OIDC trusted publishing
+#   - PyPI (myuri): tokenless via OIDC trusted publishing; the wheel and sdist are
+#     also attached to the GitHub Release
 # The bump is committed as `release: v<ver> [skip ci]`; the [skip ci] keeps that
 # commit from re-triggering this workflow.
 #
-# One-time npm setup (already done): npmjs.com → @jobharvest/myuri → Trusted
-# Publisher → GitHub Actions (JWriter20/Myuri, publish.yml). No tokens/secrets.
+# One-time setup (by the account owner, no tokens or secrets in this repo):
+#   - npm: trusted publishing cannot create a package, so the first version of
+#     `myuri` is published by hand (`npm publish` in js/ as jwriter20). Then
+#     npmjs.com → myuri → Settings → Trusted Publisher → GitHub Actions
+#     (JWriter20/Myuri, publish.yml).
+#   - PyPI: pypi.org/manage/account/publishing → add a pending publisher
+#     (project myuri, owner JWriter20, repo Myuri, workflow publish.yml, no
+#     environment). The first run creates the project.
 
 on:
   push:
@@ -39,7 +45,6 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          scope: '@jobharvest'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -68,34 +73,42 @@ jobs:
           echo "last=$LAST level=$LEVEL next=$NEXT"
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
 
-      - name: Publish npm (@jobharvest/myuri) via OIDC
+      - name: Publish npm (myuri) via OIDC
         working-directory: js
         env:
           NEXT: ${{ steps.ver.outputs.next }}
-          # Provenance needs a public package; this one is restricted, so disable it.
+          # Provenance needs a public source repository; this one is private.
           NPM_CONFIG_PROVENANCE: 'false'
         run: |
+          # Trusted publishing needs npm 11.5.1 or later.
+          npm install -g npm@^11.5.1
           npm ci
           npm version "$NEXT" --no-git-tag-version --allow-same-version
           npm run build
           # Idempotent: a re-run after a partial failure must not red-fail on a
           # version that already made it to the registry.
-          if npm publish --access restricted 2>err.log; then
-            echo "Published @jobharvest/myuri@$NEXT"
+          if npm publish --access public 2>err.log; then
+            echo "Published myuri@$NEXT"
           elif grep -q "previously published versions" err.log; then
-            echo "@jobharvest/myuri@$NEXT already on npm — no-op."
+            echo "myuri@$NEXT already on npm — no-op."
           else
             cat err.log >&2; exit 1
           fi
 
-      - name: Build python wheel
+      - name: Build python wheel and sdist
         working-directory: python
         env:
           NEXT: ${{ steps.ver.outputs.next }}
         run: |
           sed -i -E "s/^version = \".*\"/version = \"$NEXT\"/" pyproject.toml
           pip install build
-          python -m build --wheel
+          python -m build
+
+      - name: Publish PyPI (myuri) via OIDC
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+          skip-existing: true
 
       - name: Record release (commit + tag + GitHub Release)
         env:
@@ -109,4 +122,4 @@ jobs:
           git push origin HEAD:main "$TAG"
           gh release create "$TAG" python/dist/* \
             --title "myuri v$NEXT" \
-            --notes "npm: @jobharvest/myuri@$NEXT · pip: pip install \"git+https://github.com/JWriter20/Myuri.git@$TAG#subdirectory=python\""
+            --notes "npm install myuri@$NEXT · pip install myuri==$NEXT"
