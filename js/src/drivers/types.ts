@@ -25,7 +25,7 @@ export type PageFunction<A, R> = (arg: A) => R | Promise<R>
  * run JS in the page and dispatch input can be wrapped.
  *
  * Build one with {@link defineDriver}, which supplies defaults for the optional
- * members, or use a prebuilt wrapper from `myuri/drivers`.
+ * members, or use a prebuilt wrapper from `@jwriter20/myuri/drivers`.
  */
 export interface Driver {
   // ---- input primitives (required) ----

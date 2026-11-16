@@ -63,7 +63,7 @@ Convenience wrappers ship for the common cases, so most users inject nothing.
 ## TypeScript
 
 ```ts
-import { createCursor } from 'myuri'
+import { createCursor } from '@jwriter20/myuri'
 import { chromium } from 'playwright'
 
 const page = await (await chromium.launch()).newPage()
@@ -84,7 +84,7 @@ await cursor.dispose()          // detaches CDP sessions, clears timers
 Bring your own driver:
 
 ```ts
-import { createCursor, defineDriver } from 'myuri'
+import { createCursor, defineDriver } from '@jwriter20/myuri'
 
 const cursor = createCursor({
   driver: defineDriver({
@@ -112,7 +112,7 @@ const cursor = createCursor({
 Prebuilt wrappers:
 
 ```ts
-import { playwrightDriver, cdpDriver, puppeteerDriver } from 'myuri/drivers'
+import { playwrightDriver, cdpDriver, puppeteerDriver } from '@jwriter20/myuri/drivers'
 const cursor = createCursor({ driver: cdpDriver(page) })
 ```
 
@@ -206,7 +206,7 @@ mistypes, how aggressively it overshoots, how quickly it scrolls. When you const
 cursor with a `seed` and no explicit `settings`, that profile is applied automatically:
 
 ```ts
-import { createCursor, generateProfile } from 'myuri'
+import { createCursor, generateProfile } from '@jwriter20/myuri'
 
 const cursor = createCursor(page, { seed: 1234 }) // profile derived from 1234
 cursor.getSettings()                              // inspect the resolved traits
@@ -229,7 +229,7 @@ wins over the derived profile.
 
 | Path | What |
 |------|------|
-| `js/` | npm package [`myuri`](https://www.npmjs.com/package/myuri) |
+| `js/` | npm package [`@jwriter20/myuri`](https://www.npmjs.com/package/@jwriter20/myuri) |
 | `python/` | PyPI package [`myuri`](https://pypi.org/project/myuri/) |
 | `docs/media/` | the icon and the demo GIFs used in this README |
 
