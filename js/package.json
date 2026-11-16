@@ -22,15 +22,18 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./drivers": {
       "types": "./dist/drivers/index.d.ts",
-      "import": "./dist/drivers/index.js"
+      "import": "./dist/drivers/index.js",
+      "default": "./dist/drivers/index.js"
     },
     "./settings": {
       "types": "./dist/settings.d.ts",
-      "import": "./dist/settings.js"
+      "import": "./dist/settings.js",
+      "default": "./dist/settings.js"
     }
   },
   "files": [
