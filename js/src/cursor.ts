@@ -1162,6 +1162,9 @@ export class Cursor {
         // layouts full of decorative scroll wrappers even though the wheel
         // would have landed fine where it sat.
         const consumesWheel = (n: Element): boolean => {
+          // A focused number or range input steps its value under the wheel instead of scrolling (one wheel cleared
+          // a typed GPA, and the page never moved).
+          if (n.tagName === 'INPUT' && n === n.ownerDocument.activeElement && /^(number|range)$/.test((n as HTMLInputElement).type)) return true
           if (isFrameDocRoot(n)) {
             // A wheel over a scrollable iframe doc is consumed by the frame's
             // window until it hits its limit, then bubbles to the host.
