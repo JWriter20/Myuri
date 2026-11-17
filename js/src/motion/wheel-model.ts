@@ -7,26 +7,40 @@ import type { ScrollEvent } from './scroll-model.js'
  * `scroll-model.ts`.
  *
  * A trackpad reports a stream of small pixel deltas. A mouse wheel turns in
- * notches: the finger rolls the wheel a few notches (a stroke), lifts, re-grips
- * and rolls again. Two styles:
+ * notches: the finger flicks the wheel through some notches (a stroke), lifts,
+ * re-grips and flicks again. Two styles:
  *
- *  - `notched` (Windows, Linux): one event per notch, each `pxPerNotch`
- *    (default 100, which Camoufox turns into exactly one 3-line notch).
+ *  - `notched` (Windows, Linux): one event a notch, each `pxPerNotch` (default
+ *    100, which Camoufox turns into exactly one 3-line notch). The page takes a
+ *    fast flick's notches one display frame at a time, so the notches that land
+ *    in one 60 Hz frame arrive as one event of 2-4 notches. (Firefox merges
+ *    wheel events only while the page is behind, which a browser driven one
+ *    wheel call at a time never is, so the planner merges them.)
  *  - `macos`: macOS reports the wheel in 20 ms frames and accelerates a fast
  *    roll. A stroke starts at one line a frame and climbs to ~10, `pxPerLine`
  *    (default 16) each.
  *
- * Fitted from a recorded notched USB mouse (Keychron M6) on macOS, Firefox,
- * 1666 wheel events (human-input-recordings/mac-mini):
+ * `notched` is fitted from a notched USB mouse on Windows, Firefox, 411 wheel
+ * events in 5 long scrolls, split into strokes at gaps over 40 ms (29 single
+ * strokes of 4+ notches; robust lognormal fits, mu = ln median and
+ * sd = ln(p90 / p10) / 2.563). Windows stamps events on its 15.625 ms timer
+ * grid, so times are fitted with each stamp spread uniformly over its tick:
+ *  - a stroke is lognormal(2.833, 0.27) notches (p10/50/90 11/17/22) over
+ *    lognormal(5.064, 0.18) ms (121/158/192);
+ *  - re-grip between strokes lognormal(4.258, 0.446) ms (45/71/141, 36 gaps);
+ *  - the flick is fastest at the start and slows evenly to the end: notch i of
+ *    n clicks at 1 - sqrt(1 - (i + 0.5) / n) of the stroke. In 60 Hz frames
+ *    this gives 48/33/14/4% of events 1/2/3/4 notches and 6/8/10 events a
+ *    stroke (recorded 41/41/14/4%, 7/9/11), front-loaded as recorded.
+ *
+ * `macos` is fitted from a notched USB mouse on macOS, Firefox, 1666 wheel
+ * events:
  *  - strokes of 3+ frames last lognormal(5.215, 0.552) ms (median 184);
  *  - re-grip between strokes lognormal(4.952, 0.563) ms (median 141);
  *  - a third of strokes are a lone notch;
  *  - macOS frames are 20 ms, ~10% 40 ms (a dropped frame); a stroke starts at
  *    1 line, rises 1-3 lines a frame (sometimes 5) to a peak of 6-13 lines
  *    (median 10) and holds it to the end.
- * macOS hides the individual notches inside its frames, so the notch count of a
- * `notched` stroke (2-6) is a physical estimate, not fitted: with a 184 ms
- * stroke it gives 30-90 ms between notches.
  */
 
 export type WheelStyle = 'notched' | 'macos'
@@ -48,10 +62,14 @@ const REGRIP_SD = 0.563
 const REGRIP_MIN_MS = 50
 const REGRIP_MAX_MS = 600
 const LONE_NOTCH_PROBABILITY = 0.33
-const MIN_NOTCHES = 2
-const MAX_NOTCHES = 6
-const NOTCH_JITTER_MS = 3
-const MIN_NOTCH_GAP_MS = 8
+
+const NOTCHES_MU = 2.833
+const NOTCHES_SD = 0.27
+const FLICK_MU = 5.064
+const FLICK_SD = 0.18
+const FLICK_REGRIP_MU = 4.258
+const FLICK_REGRIP_SD = 0.446
+const FRAME_MS = 1000 / 60
 
 const MAC_FRAME_MS = 20
 const MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -68,53 +86,29 @@ function lognormal(rng: Rng, mu: number, sd: number): number {
   return Math.exp(gaussian(rng, mu, sd))
 }
 
-/** Minimum-jerk finger position 0..1 at time fraction tau. */
-function minJerk(tau: number): number {
-  return tau * tau * tau * (10 - 15 * tau + 6 * tau * tau)
-}
-
-/** Time fraction at which the minimum-jerk motion reaches position `s`. */
-function minJerkInverse(s: number): number {
-  let lo = 0
-  let hi = 1
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) / 2
-    if (minJerk(mid) < s) lo = mid
-    else hi = mid
-  }
-  return (lo + hi) / 2
-}
-
-/** Notch counts of each stroke, covering `total` notches. */
-function strokeSizes(total: number, rng: Rng): number[] {
-  const sizes: number[] = []
-  let left = total
-  while (left > 0) {
-    const n = rng() < LONE_NOTCH_PROBABILITY
-      ? 1
-      : MIN_NOTCHES + Math.floor(rng() * (MAX_NOTCHES - MIN_NOTCHES + 1))
-    sizes.push(Math.min(n, left))
-    left -= sizes[sizes.length - 1]
-  }
-  return sizes
-}
-
 function notchedPath(target: number, rng: Rng, pxPerNotch: number): ScrollEvent[] {
   const sign = Math.sign(target)
-  const total = Math.max(1, Math.round(Math.abs(target) / pxPerNotch))
-  const events: ScrollEvent[] = []
-  for (const n of strokeSizes(total, rng)) {
-    const duration = clamp(lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
-    // Notch i clicks when the finger has rolled (i + 0.5) / n of the stroke.
-    const times = Array.from({ length: n }, (_, i) => duration * minJerkInverse((i + 0.5) / n))
+  let left = Math.max(1, Math.round(Math.abs(target) / pxPerNotch))
+  // Each event's frame and notch count; the notches of one frame are one event.
+  const frames: { frame: number; notches: number }[] = []
+  let start = 0
+  while (left > 0) {
+    const n = Math.min(left, Math.max(1, Math.round(lognormal(rng, NOTCHES_MU, NOTCHES_SD))))
+    const duration = clamp(lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+    const regrip = clamp(lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+    let last = start
     for (let i = 0; i < n; i++) {
-      const gap = i + 1 < n
-        ? Math.max(MIN_NOTCH_GAP_MS, times[i + 1] - times[i] + gaussian(rng, 0, NOTCH_JITTER_MS))
-        : clamp(lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
-      events.push({ deltaTime: Math.round(gap), deltaY: sign * pxPerNotch })
+      last = start + duration * (1 - Math.sqrt(1 - (i + 0.5) / n))
+      const frame = Math.round(last / FRAME_MS)
+      if (frames.length > 0 && frames[frames.length - 1].frame === frame) frames[frames.length - 1].notches++
+      else frames.push({ frame, notches: 1 })
     }
+    left -= n
+    start = last + regrip
   }
-  return events
+  // The last event waits out the final re-grip.
+  const at = (i: number) => Math.round(i < frames.length ? frames[i].frame * FRAME_MS : start)
+  return frames.map(({ notches }, i) => ({ deltaTime: at(i + 1) - at(i), deltaY: sign * notches * pxPerNotch }))
 }
 
 function macPath(target: number, rng: Rng, pxPerLine: number): ScrollEvent[] {

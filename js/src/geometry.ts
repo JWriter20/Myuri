@@ -146,41 +146,65 @@ export function getBetterStartingPosition(
 export const shouldOvershoot = (a: Vector, b: Vector, threshold: number): boolean =>
   magnitude(direction(a, b)) > threshold
 
-function ensureTerminalPoint(pathPoints: TimedVector[], end: Vector): TimedVector[] {
-  if (pathPoints.length === 0) return []
-  const last = pathPoints[pathPoints.length - 1]
-  return [...pathPoints.slice(0, -1), { ...last, x: end.x, y: end.y }]
+/** A point of a planned move, `t` ms after the move starts. */
+export interface PlannedPoint {
+  x: number
+  y: number
+  t: number
 }
 
-/** Generate a timed, human-like path from `start` to a point or box. */
-export function path(start: Vector, end: BoundingBox | Vector, options: PathOptions | undefined, rng: Rng): TimedVector[] {
-  const opts = options ?? {}
-  const endPoint =
-    typeof end === 'object' && 'width' in end
-      ? { x: end.x + end.width / 2, y: end.y + end.height / 2 }
-      : end
+/**
+ * A mouse reports its position about every 10 ms, whatever the OS: a USB mouse
+ * on a Mac, which shows every report, gave 3588 pointermoves while moving
+ * 8.8/10/11.1 ms apart (p10/50/90), lognormal mu 2.303, sd 0.091 (log median,
+ * 10-90% span / 2.563). Where the OS coalesces reports into display frames
+ * (Windows) and stamps them on its timer grid, the browser does that, not the
+ * planner.
+ */
+const REPORT_MU = 2.303
+const REPORT_SD = 0.091
+const REPORT_MS = 10
 
-  const distance = Math.hypot(endPoint.x - start.x, endPoint.y - start.y)
-  // cursory draws from its own numpy-compatible generator, so hand it a seed
-  // pulled from our stream: same myuri seed -> same trajectory, in JS and Python.
-  const { points: raw, timings } = generateTrajectory([start.x, start.y], [endPoint.x, endPoint.y], {
-    frequency: 60,
-    frequencyRandomizer: 1,
-    seed: Math.floor(rng() * 0x100000000),
-  })
-  const points = raw.map(([x, y]) => ({ x, y }))
-
-  let speedFactor = opts.moveSpeed !== undefined && opts.moveSpeed > 0 ? 1 / opts.moveSpeed : 1
+/** One human-like stroke from `start` to `end`, one point a mouse report; the last is exactly `end`. */
+export function trajectory(start: Vector, end: Vector, options: PathOptions | undefined, rng: Rng): PlannedPoint[] {
+  const distance = Math.hypot(end.x - start.x, end.y - start.y)
+  let speedFactor = options?.moveSpeed !== undefined && options.moveSpeed > 0 ? 1 / options.moveSpeed : 1
   if (distance < 100) {
     const smallMovementBoost = 1.5 + 1.5 * (1 - distance / 100)
     speedFactor = speedFactor / smallMovementBoost
   }
+  // cursory draws from its own numpy-compatible generator, so hand it a seed
+  // pulled from our stream: same myuri seed -> same trajectory, in JS and Python.
+  // Its timings are scaled by speedFactor afterwards, so ask for one sample a report.
+  const { points, timings } = generateTrajectory([start.x, start.y], [end.x, end.y], {
+    frequency: (1000 / REPORT_MS) * speedFactor,
+    frequencyRandomizer: 1,
+    seed: Math.floor(rng() * 0x100000000),
+  })
+  const times = timings.map((t) => t * speedFactor)
+  const total = times[times.length - 1]
+  // Read the path where the pointer is at each report; the first report after it stops is `end`.
+  const out: PlannedPoint[] = []
+  const report = () => Math.exp(gaussian(rng, REPORT_MU, REPORT_SD))
+  let j = 0
+  let t = report()
+  for (; t < total; t += report()) {
+    while (times[j + 1] <= t) j++
+    const a = (t - times[j]) / (times[j + 1] - times[j])
+    const x = points[j][0] + a * (points[j + 1][0] - points[j][0])
+    const y = points[j][1] + a * (points[j + 1][1] - points[j][1])
+    out.push({ x: Math.max(0, x), y: Math.max(0, y), t })
+  }
+  out.push({ x: end.x, y: end.y, t })
+  return out
+}
 
+/** Generate a timed, human-like path from `start` to a point or box. */
+export function path(start: Vector, end: BoundingBox | Vector, options: PathOptions | undefined, rng: Rng): TimedVector[] {
+  const endPoint =
+    typeof end === 'object' && 'width' in end
+      ? { x: end.x + end.width / 2, y: end.y + end.height / 2 }
+      : end
   const startTime = Date.now()
-  const timed: TimedVector[] = points.map((p, i) => ({
-    x: Math.max(0, p.x),
-    y: Math.max(0, p.y),
-    timestamp: startTime + Math.round(timings[i] * speedFactor),
-  }))
-  return ensureTerminalPoint(timed, endPoint)
+  return trajectory(start, endPoint, options, rng).map(({ x, y, t }) => ({ x, y, timestamp: startTime + Math.round(t) }))
 }

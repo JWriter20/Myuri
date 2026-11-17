@@ -400,17 +400,32 @@ export class KeystrokeTiming {
   }
 
   /**
-   * Select-all then delete: modifier down, 'a' after a Shift-like lead,
-   * modifier up just after 'a' comes up, then one Backspace.
+   * A chord such as Control+a or Meta+Shift+z: each modifier goes down a
+   * Shift-like lead after the one before, the key after the last, and each
+   * modifier comes up just after the key does (innermost first).
    */
+  planChord(modifiers: readonly string[], key: string): KeyAction[] {
+    const out: KeyAction[] = []
+    let at = 0
+    modifiers.forEach((m, i) => {
+      if (i > 0) at += this.shiftLead()
+      out.push({ at, type: 'down', key: m })
+    })
+    const keyDown = modifiers.length ? at + this.shiftLead() : 0
+    const keyUp = keyDown + this.hold(key)
+    out.push({ at: keyDown, type: 'down', key }, { at: keyUp, type: 'up', key })
+    for (const m of [...modifiers].reverse()) {
+      const up = Math.max(keyDown + SHIFT_MIN_AFTER_KEY, keyUp + gaussian(this.rng, SHIFT_TRAIL_MEAN, SHIFT_TRAIL_SD))
+      out.push({ at: up, type: 'up', key: m })
+    }
+    return out.sort((x, y) => x.at - y.at)
+  }
+
+  /** Select-all with `modifier`, then one Backspace once the modifier is up. */
   planSelectAllDelete(modifier: string): KeyAction[] {
-    const out: KeyAction[] = [{ at: 0, type: 'down', key: modifier }]
-    const aDown = this.shiftLead()
-    const aUp = aDown + this.hold('a')
-    out.push({ at: aDown, type: 'down', key: 'a' })
-    out.push({ at: aUp, type: 'up', key: 'a' })
-    const modUp = Math.max(aDown + SHIFT_MIN_AFTER_KEY, aUp + gaussian(this.rng, SHIFT_TRAIL_MEAN, SHIFT_TRAIL_SD))
-    out.push({ at: modUp, type: 'up', key: modifier })
+    const out = this.planChord([modifier], 'a')
+    const aDown = out.find((a) => a.type === 'down' && a.key === 'a')!.at
+    const modUp = out.find((a) => a.type === 'up' && a.key === modifier)!.at
     const bsDown = Math.max(aDown + this.gap({ key: 'a' }, { key: 'Backspace' }), modUp + SHIFT_CLEAR)
     out.push({ at: bsDown, type: 'down', key: 'Backspace' })
     out.push({ at: bsDown + this.hold('Backspace'), type: 'up', key: 'Backspace' })

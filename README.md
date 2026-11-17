@@ -169,11 +169,13 @@ two delays.
 | `device` | What the page sees | Fitted from |
 |---|---|---|
 | `trackpad` (default) | a stream of small pixel deltas about 8 ms apart, as a flick or a slower drag | recorded 120 Hz trackpad scrolls |
-| `mouse` | whole wheel notches, rolled in finger strokes with a re-grip between them | a recorded notched USB mouse on macOS |
+| `mouse` | whole wheel notches, flicked in finger strokes with a re-grip between them | a recorded notched USB mouse on Windows (`notched`) and on macOS (`macos`) |
 
 With `device: 'mouse'`, `scroll.wheel.style` sets how the wheel reports:
-- `notched` (Windows, Linux): one wheel call per notch of `pxPerNotch` (default 100). A stroke
-  rolls 1 to 6 notches over about 180 ms, and the finger re-grips for about 140 ms.
+- `notched` (Windows, Linux): notches of `pxPerNotch` (default 100). A stroke flicks about
+  17 notches (11 to 22) over about 158 ms, fastest at the start, and the finger re-grips for
+  about 70 ms. Notches that land in one 60 Hz display frame arrive as one wheel call of 2 to
+  4 notches, as the page receives them.
 - `macos`: 20 ms frames of `pxPerLine` (default 16) lines. Each stroke starts at one line a
   frame and accelerates to about 10, as macOS does.
 
@@ -190,8 +192,68 @@ cursor = create_cursor(page, settings={"scroll": {"device": "mouse"}})
 
 **Camoufox:** Camoufox turns every `mouse.wheel` call into notches (100 px is one notch), so
 trackpad deltas don't survive it. Use `device: 'mouse'` with the default 100 px notches, and
-myuri's timing reaches the page one notch per call. On a macOS identity Camoufox splits each
-call into lines again, so the `macos` style gets shaped twice there.
+myuri's strokes reach the page on their timing; a call of several notches arrives as that many
+one-notch events. On a macOS identity Camoufox splits each call into lines again, so the
+`macos` style (the default with `os: 'macos'`) gets shaped twice there.
+
+## The identity's OS
+
+Pass `os` (`'macos'`, `'windows'` or `'linux'`), the OS the browser claims, so the input
+matches it:
+
+- **Shortcut modifier.** Pasting text no US key types (and `selectAllModifier`) uses Cmd on
+  macOS and Ctrl elsewhere. Without `os`, the modifier comes from the page's
+  `navigator.platform`.
+- **Repeated positions.** A move reports its position about every 10 ms on every OS, a
+  mouse's report rate; the browser groups the reports into display frames. Only on macOS
+  does a report repeat the pixel the pointer is already on. Without `os`, as Windows.
+- **Mouse wheel.** With `device: 'mouse'`, macOS defaults to the `macos` wheel style and
+  Windows and Linux to `notched`. An explicit `scroll.wheel.style` still wins.
+- **Sideways scrolling.** A horizontal wheel scroll holds Shift. On macOS the OS turns the
+  events horizontal, so they carry `deltaX`; elsewhere they carry the delta in `deltaY`
+  and the browser scrolls sideways.
+
+How long a person takes (to move, click, hold a key, type) is one human model on every OS.
+Linux has no recording of its own, so it behaves as Windows apart from the wheel's defaults
+above. An unknown `os` throws.
+
+```ts
+const cursor = createCursor(page, { os: 'windows', settings: { scroll: { device: 'mouse' } } })
+```
+
+```python
+cursor = create_cursor(page, os="windows", settings={"scroll": {"device": "mouse"}})
+```
+
+## Planning without a browser
+
+The planners return the timelines a `Cursor` plays, with no page or driver. The Cursor
+builds its actions from these same functions. Each one takes the random stream as `rng`,
+a zero-argument function returning a number in `[0, 1)`; `makeRng(seed)` / `make_rng(seed)`
+gives the stream a Cursor uses, and a seed plans the same in both languages. Times are
+milliseconds from the start of the plan.
+
+| TypeScript | Python | Returns |
+|---|---|---|
+| `planMove(start, end, rng, { os, moveSpeed, overshoot, settings })` | `plan_move(start, end, rng, *, os, move_speed, overshoot, settings)` | `{ x, y, t }` points, one a mouse report (about 10 ms); the last is exactly `end`. Off macOS, a Cursor skips a report on the pixel it already sent |
+| `planPoint(box, rng, { start })` | `plan_point(box, rng, *, start)` | where in `box` a person clicks |
+| `planClick(rng, { os, clickCount })` | `plan_click(rng, *, os, click_count)` | the dwell before the first press, and each press's down and up |
+| `planType(text, rng, { os, wpm, mistakeMultiplier })` | `plan_type(text, rng, *, os, wpm, mistake_multiplier)` | `[t, 'down' \| 'up' \| 'insert', key]` steps, typos included |
+| `planPress(key, rng, { os, wpm })` | `plan_press(key, rng, *, os, wpm)` | the steps of a key or chord (`'Control+Shift+z'`) |
+| `planSelectAll(rng, { os })` | `plan_select_all(rng, *, os)` | Cmd+A or Ctrl+A for `os` |
+| `planWheel(dx, dy, rng, { os, device, settings })` | `plan_wheel(dx, dy, rng, *, os, device, settings)` | `['wheel', dx, dy, t]` and `['key', 'Shift', 'down' \| 'up', t]` steps |
+
+Keys are Playwright key names. `SCROLL_PLAN_JS` is the page function the Cursor uses to plan
+a scroll to an element, as `(element, { finishPosition, pad, edge, fromX, fromY })`, with the Cursor's
+values in `SCROLL_FINISH_POSITION`, `SCROLL_PAD` and `SCROLL_EDGE`.
+
+```ts
+import { makeRng, planMove, planClick } from '@jwriter20/myuri'
+
+const rng = makeRng(1234)
+const path = planMove({ x: 10, y: 20 }, { x: 800, y: 450 }, rng)
+const click = planClick(rng, { clickCount: 2 })
+```
 
 ## Determinism
 

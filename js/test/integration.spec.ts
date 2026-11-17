@@ -250,7 +250,7 @@ describe('Cursor (headless integration)', () => {
     expect(Math.abs(sentDistance - plannedDistance)).toBeLessThanOrEqual(1)
   })
 
-  it('scroll with device mouse sends one wheel call per notch', async () => {
+  it('scroll with device mouse sends whole notches', async () => {
     const fake = makeFakeDriver({ x: 100, y: 1500, width: 200, height: 50 })
     const sent: number[] = []
     const driver: Driver = {
@@ -262,7 +262,7 @@ describe('Cursor (headless integration)', () => {
     const cursor = createCursor({ driver, seed: 8, settings: { scroll: { device: 'mouse' } } })
     await cursor.scroll('#target', { maxTries: 1 })
     expect(sent.length).toBeGreaterThan(0)
-    for (const d of sent) expect(Math.abs(d)).toBe(100)
+    for (const d of sent) expect(d % 100).toBe(0)
   })
 
   it('is deterministic: same seed -> same landing point', async () => {

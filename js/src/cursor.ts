@@ -1,4 +1,4 @@
-import { type Vector, overshoot as overshootPoint } from './math.js'
+import { type Vector } from './math.js'
 import { type Rng, makeRng, generateRandomSeed } from './rng.js'
 import { type Driver, type MouseButton, type ResolvedDriver, defineDriver } from './drivers/types.js'
 import { driverFromPage } from './drivers/index.js'
@@ -12,16 +12,16 @@ import {
   pointHitsTarget,
 } from './page.js'
 import {
-  path,
   getRandomBoxPoint,
   getBetterStartingPosition,
   clampToBrowserBounds,
   shouldOvershoot,
-  VIEWPORT_PADDING,
+  type PlannedPoint,
 } from './geometry.js'
-import { scrollModel } from './motion/scroll-model.js'
-import { generateWheelPath } from './motion/wheel-model.js'
-import { clickHoldMs, dragCarrySpeed, dragEndMs, dragStartMs, multiClickGapMs, preClickDwellMs } from './motion/click-model.js'
+import { SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_FOR_SELECTOR, type ScrollPlan } from './scroll-plan.js'
+import { dragCarrySpeed, dragEndMs, dragStartMs, preClickDwellMs } from './motion/click-model.js'
+import { clicksWith, moveWith, wheelStyleFor, wheelWith } from './plan.js'
+import { primaryModifier, type Os } from './target-os.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type { BoundingBox } from './math.js'
 import type {
@@ -158,25 +158,6 @@ const focusedField = (): FocusedField | null => {
   }
 }
 
-/** One pass of the container-aware scroll planner (see computeScrollPlan). */
-interface ScrollPlan {
-  /** Target's click region is on-screen, inside the clear band, and unoccluded. */
-  inView: boolean
-  /** Wheel delta for the chosen scroller this pass; 0 when nothing can move the target. */
-  deltaY: number
-  hoverX: number
-  hoverY: number
-  /** The chosen scroller is the page (drives wheel-multiplier calibration). */
-  isPage: boolean
-  /**
-   * Visible, clickable clip of the target: element rect ∩ ancestor scroller
-   * rects ∩ pinned-bar clear band. Null when nothing usable is on-screen —
-   * callers must NOT move toward the element in that case (that is the
-   * edge-riding failure mode this exists to prevent).
-   */
-  region: BoundingBox | null
-}
-
 /** Options accepted when constructing a Cursor. */
 export interface CursorOptions {
   /** PRNG seed. Same seed -> identical motion, scrolls, and typing rhythm. */
@@ -190,11 +171,20 @@ export interface CursorOptions {
   /** Begin idle random movements immediately. */
   performRandomMovesInitially?: boolean
   /**
+   * The OS the browser claims to run on. It picks the paste modifier, whether
+   * a move repeats a position and how a mouse wheel scrolls (see
+   * `target-os.ts`), so they match the identity. Timing is the same on every
+   * OS. Without it, the paste modifier is read from the page's
+   * `navigator.platform` and moves and the wheel are Windows-like.
+   */
+  os?: Os
+  /**
    * Clear fields with a keyboard select-all (this modifier + A) instead of the
    * default triple-click. Off by default because the modifier reveals the real
    * OS: pages can read `ctrlKey`/`metaKey`, and browsers only honor the one for
    * the OS they actually run on (Cmd on macOS, Ctrl elsewhere), whatever
    * `navigator.platform` claims. Use it for editors where triple-click fails.
+   * With `os`, it must be that OS's modifier.
    */
   selectAllModifier?: 'Control' | 'Meta'
   /** Default per-action options. */
@@ -216,9 +206,12 @@ export class Cursor {
   private readonly settings: MyuriSettings
   private readonly defaults: NonNullable<CursorOptions['defaults']>
   private readonly selectAllModifier: 'Control' | 'Meta' | undefined
+  private readonly os: Os | undefined
   private typer: HumanTyper
 
   private previous: Vector
+  /** The browser's pointer is at `previous` (until the first move it is only a guess). */
+  private placed = false
   /** `Date.now()` of the last mouse move, for the pause before a press. */
   private lastMoveAt = 0
   private isMoving = false
@@ -229,7 +222,10 @@ export class Cursor {
   private scrollMultiplier: number | null = null
 
   constructor(driver: Driver, options: CursorOptions = {}) {
-    this.driver = defineDriver(driver)
+    if (options.os !== undefined && options.selectAllModifier !== undefined && options.selectAllModifier !== primaryModifier(options.os)) {
+      throw new Error(`myuri: selectAllModifier ${options.selectAllModifier} is not select-all on ${options.os}`)
+    }
+    this.driver = defineDriver(driver, { os: options.os })
     this.seed = (options.seed ?? generateRandomSeed()) >>> 0
     this.rng = makeRng(this.seed)
     // An explicit `settings` override always wins (back-compat). Otherwise, if
@@ -241,8 +237,10 @@ export class Cursor {
         : options.seed !== undefined
           ? generateProfile(this.seed)
           : resolveSettings()
+    this.settings.scroll.wheel.style = wheelStyleFor(options.os, options.settings)
     this.defaults = options.defaults ?? {}
     this.selectAllModifier = options.selectAllModifier
+    this.os = options.os
     this.previous = options.start ?? getBetterStartingPosition(options.dimensions, this.rng)
 
     const typerInput: TyperInput = {
@@ -357,45 +355,48 @@ export class Cursor {
   // ---- primitive motion ---------------------------------------------------
 
   /**
-   * Press and release a button where the cursor is, timed like a person: the
-   * first click of a gesture waits a drawn beat after the last move, and the
-   * button is held for a drawn time (see `motion/click-model.ts`).
+   * Clicks `first`..`last` of a multi-click where the cursor is, timed like a
+   * person (`clicksWith` in `plan.ts`): click 1 waits a drawn beat after the
+   * last move, later ones a drawn gap after the release before.
    */
-  private async press(button: MouseButton, clickCount: number, holdMs?: number): Promise<void> {
-    if (clickCount === 1) await delay(this.lastMoveAt + preClickDwellMs(this.rng) - Date.now())
-    const drawn = clickHoldMs(this.rng)
-    await this.driver.click(button, clickCount, holdMs ?? drawn)
-  }
-
-  private async tracePath(vectors: ReturnType<typeof path>): Promise<void> {
-    if (vectors.length === 0) return
-    const vp = await viewportOf(this.driver)
-    let prevT = vectors[0].timestamp
-    for (const v of vectors) {
-      if (this.driver.isClosed()) return
-      const clamped = clampToBrowserBounds(v.x, v.y, vp)
-      const pos = { x: Math.round(clamped.x), y: Math.round(clamped.y) }
-      const targetDelta = v.timestamp - prevT
-      prevT = v.timestamp
-      const t0 = Date.now()
-      await this.driver.move(pos.x, pos.y)
-      this.previous = pos
-      this.lastMoveAt = Date.now()
-      // Subtract dispatch latency so per-point cadence matches the fitted model.
-      await delay(targetDelta - (Date.now() - t0))
+  private async clicks(button: MouseButton, first: number, last: number, holdMs?: number): Promise<void> {
+    const { leadMs, presses } = clicksWith(this.rng, first, last)
+    await delay(first === 1 ? this.lastMoveAt + leadMs - Date.now() : leadMs)
+    for (let i = 0; i < presses.length; i++) {
+      if (i > 0) await delay(presses[i][0] - presses[i - 1][1])
+      await this.driver.click(button, first + i, holdMs ?? presses[i][1] - presses[i][0])
     }
   }
 
   private async moveAlong(destination: Vector, options: MoveToOptions, allowOvershoot: boolean): Promise<void> {
-    if (allowOvershoot) {
-      const oShoot = overshootPoint(destination, this.settings.overshoot.radius, this.rng)
-      await this.tracePath(path(this.previous, oShoot, options, this.rng))
-      const dwell = this.settings.overshoot.dwell
-      await delay(dwell.minMs + this.rng() * Math.max(0, dwell.maxMs - dwell.minMs))
-      const correctionSpeed = (options.moveSpeed ?? 1) * this.settings.overshoot.correctionSpeedFactor
-      await this.tracePath(path(this.previous, destination, { moveSpeed: correctionSpeed }, this.rng))
-    } else {
-      await this.tracePath(path(this.previous, destination, options, this.rng))
+    const vp = await viewportOf(this.driver)
+    const settle = (p: Vector): Vector => {
+      const clamped = clampToBrowserBounds(p.x, p.y, vp)
+      return { x: Math.round(clamped.x), y: Math.round(clamped.y) }
+    }
+    const points = moveWith(
+      this.previous,
+      destination,
+      this.rng,
+      { moveSpeed: options.moveSpeed, overshoot: allowOvershoot, settings: this.settings.overshoot },
+      settle,
+    )
+    await this.tracePath(points, settle)
+  }
+
+  /** Move through `points` on their schedule (an absolute one, so dispatch latency doesn't accumulate). */
+  private async tracePath(points: PlannedPoint[], settle: (p: Vector) => Vector): Promise<void> {
+    const start = Date.now()
+    for (const p of points) {
+      if (this.driver.isClosed()) return
+      await delay(start + p.t - Date.now())
+      const pos = settle(p)
+      // Only macOS reports a mouse that has not left its pixel; elsewhere it sends nothing.
+      if (this.placed && this.os !== 'macos' && pos.x === this.previous.x && pos.y === this.previous.y) continue
+      await this.driver.move(pos.x, pos.y)
+      this.previous = pos
+      this.placed = true
+      this.lastMoveAt = Date.now()
     }
   }
 
@@ -612,10 +613,7 @@ export class Cursor {
         }
       }
       const count = Math.max(1, Math.min(3, Math.round(opts.clickCount ?? 1)))
-      for (let clickCount = 1; clickCount <= count; clickCount++) {
-        if (clickCount > 1) await delay(multiClickGapMs(this.rng))
-        await this.press(opts.button ?? 'left', clickCount, opts.holdMs)
-      }
+      await this.clicks(opts.button ?? 'left', 1, count, opts.holdMs)
       await delay(Math.max(opts.waitForClick ?? 0, 15))
     } finally {
       await this.endAction(wasRandom, opts)
@@ -661,10 +659,7 @@ export class Cursor {
         await this.moveAlong({ x: x + this.rng() * 12, y: y + (this.rng() - 0.5) * 3 }, {}, false)
         firstClick = 1
       }
-      for (let clickCount = firstClick; clickCount <= 3; clickCount++) {
-        if (clickCount > 1) await delay(multiClickGapMs(this.rng))
-        await this.press('left', clickCount)
-      }
+      await this.clicks('left', firstClick, 3)
       if (field.lines > 1) {
         await delay(120 + this.rng() * 120)
         await this.driver.down('Shift')
@@ -750,473 +745,17 @@ export class Cursor {
     }
   }
 
-  /**
-   * Container-aware scroll plan. One pass computes:
-   *
-   *  - the CLEAR BAND: the viewport minus pinned (fixed/sticky) top/bottom bars,
-   *    probed at the target's column — a target behind a sticky action footer is
-   *    only reachable inside this band, so all positioning targets it rather
-   *    than raw viewport fractions (finishPosition·vh lands exactly on a 50vh
-   *    footer's edge);
-   *  - the CHOSEN SCROLLER: the innermost scrollable ancestor that can actually
-   *    MOVE the target toward finishPosition inside its own visible band. An
-   *    exhausted scroller (a top-anchored first option in a list already at
-   *    scrollTop 0) yields delta 0 and we ESCALATE to the next ancestor up the
-   *    chain, ending at the page. A position:fixed ancestor caps the chain:
-   *    window scroll cannot move anything inside it, so such targets are only
-   *    ever revealed by scrolling their own containers (via wheel over them);
-   *  - the CLICK REGION: the target's on-screen clip (element ∩ scroller rects
-   *    ∩ clear band), with occlusion judged across the region — not just the
-   *    center point, which passed for targets straddling a footer edge.
-   */
+  /** One pass of the scroll planner (`scroll-plan.ts`) for `selector`. */
   private async computeScrollPlan(selector: string, finishPosition: number): Promise<ScrollPlan | null> {
-    const pad = Math.max(20, VIEWPORT_PADDING + 5)
-    const from = this.previous
-    return (await this.driver.evaluate(
-      (arg: {
-        selector: string
-        finishPosition: number
-        pad: number
-        edge: number
-        fromX: number
-        fromY: number
-      }) => {
-        function resolve(s: string): Element | null {
-          // `a >> b`: descend into a's shadow root; `a >>> b`: descend into a's
-          // same-origin iframe document.
-          if (s.includes('>>')) {
-            const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
-            let root: Document | ShadowRoot | Element = document
-            let el: Element | null = null
-            let hop = ''
-            for (const t of tokens) {
-              if (t === '>>' || t === '>>>') {
-                hop = t
-                continue
-              }
-              if (el) {
-                if (hop === '>>>') {
-                  let doc: Document | null = null
-                  try {
-                    doc = (el as HTMLIFrameElement).contentDocument
-                  } catch {
-                    doc = null // cross-origin
-                  }
-                  if (!doc) return null
-                  root = doc
-                } else {
-                  root = (el as Element).shadowRoot || (el as Element)
-                }
-              }
-              el = (root as ParentNode).querySelector(t)
-              if (!el) return null
-            }
-            return el
-          }
-          if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
-            const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
-            try {
-              return document.evaluate(expr, document, null, 9, null).singleNodeValue as Element | null
-            } catch {
-              return null
-            }
-          }
-          const direct = document.querySelector(s)
-          if (direct) return direct
-          const stack: Array<Document | ShadowRoot> = [document]
-          while (stack.length) {
-            const root = stack.pop() as Document | ShadowRoot
-            const found = root.querySelector(s)
-            if (found) return found
-            root.querySelectorAll('*').forEach((e) => {
-              if ((e as Element).shadowRoot) stack.push((e as Element).shadowRoot as ShadowRoot)
-            })
-          }
-          return null
-        }
-        const el = resolve(arg.selector) as HTMLElement | null
-        if (!el) return null
-        // Offset of a node's document viewport in top-page coordinates: mouse
-        // input is page-level, so every rect from inside a same-origin iframe
-        // is translated before any band/clip math.
-        const frameOffset = (node: Element): { x: number; y: number } => {
-          let x = 0
-          let y = 0
-          let win = node.ownerDocument ? node.ownerDocument.defaultView : null
-          while (win && win !== window && win.frameElement) {
-            const fe = win.frameElement as HTMLElement
-            const fr = fe.getBoundingClientRect()
-            x += fr.x + fe.clientLeft
-            y += fr.y + fe.clientTop
-            win = win.parent as Window & typeof globalThis
-          }
-          return { x, y }
-        }
-        type Rect = { x: number; y: number; width: number; height: number; top: number; bottom: number; left: number; right: number }
-        const rectOf = (node: Element): Rect => {
-          const r = node.getBoundingClientRect()
-          const o = frameOffset(node)
-          return {
-            x: r.x + o.x, y: r.y + o.y, width: r.width, height: r.height,
-            top: r.top + o.y, bottom: r.bottom + o.y, left: r.left + o.x, right: r.right + o.x,
-          }
-        }
-        const styleOf = (node: Element): CSSStyleDeclaration =>
-          ((node.ownerDocument && node.ownerDocument.defaultView) || window).getComputedStyle(node)
-        // Is this node the root of a scrollable (i.e. window-scrolled) iframe doc?
-        const isFrameDocRoot = (node: Element): boolean =>
-          !!node.ownerDocument &&
-          node === node.ownerDocument.documentElement &&
-          node.ownerDocument.defaultView !== window
-        // Walk up through shadow hosts AND same-origin frame boundaries.
-        const stepUp = (node: Element): Element | null => {
-          if (node.parentElement) return node.parentElement
-          const r = node.getRootNode() as ShadowRoot | Document
-          if ((r as ShadowRoot).host) return (r as ShadowRoot).host as Element
-          try {
-            return ((r as Document).defaultView?.frameElement as Element | null) ?? null
-          } catch {
-            return null
-          }
-        }
-        const vh = window.innerHeight || document.documentElement.clientHeight
-        const vw = window.innerWidth || document.documentElement.clientWidth
-        const elRect = rectOf(el)
-
-        // Every scrollable ancestor, innermost first. A position:fixed ancestor
-        // is a hard barrier: neither the page nor anything above it can move the
-        // target (fixed boxes don't move with window scroll), so the chain stops
-        // there — but the fixed element itself may be the scroller (sticky-bar
-        // form layouts), so it's tested for scrollability before the cut.
-        const chain: HTMLElement[] = []
-        let pageCanMoveTarget = true
-        let cur = stepUp(el)
-        let depth = 0
-        while (cur && depth < 60 && cur !== document.documentElement) {
-          if (isFrameDocRoot(cur)) {
-            // An iframe's document scrolls through its own window — a page-step
-            // scoped to the frame. Continue past it into the host document.
-            const w = cur.ownerDocument.defaultView!
-            if (cur.scrollHeight > w.innerHeight + 1) chain.push(cur as HTMLElement)
-            cur = stepUp(cur)
-            depth++
-            continue
-          }
-          const st = styleOf(cur)
-          const scrollable =
-            cur.scrollHeight > cur.clientHeight + 1 &&
-            (st.overflowY === 'scroll' || st.overflowY === 'auto')
-          if (cur.ownerDocument && cur === cur.ownerDocument.body) {
-            // body-as-scroller only matters when its document doesn't scroll.
-            const docRoot = cur.ownerDocument.documentElement
-            const docVh = cur.ownerDocument.defaultView?.innerHeight ?? vh
-            if (scrollable && !(docRoot.scrollHeight > docVh + 10)) {
-              chain.push(cur as HTMLElement)
-            }
-            if (cur === document.body) break
-            cur = stepUp(cur)
-            depth++
-            continue
-          }
-          if (scrollable) chain.push(cur as HTMLElement)
-          if (st.position === 'fixed') {
-            // Fixed pins to its OWN frame's viewport. Only a top-document fixed
-            // ancestor defeats the page-step — the host page still moves a whole
-            // iframe. Inside a frame, skip to the frame element: nothing above
-            // `cur` in this frame can move the target, but host scrollers can.
-            if (cur.ownerDocument === document) {
-              pageCanMoveTarget = false
-              break
-            }
-            try {
-              cur = (cur.ownerDocument.defaultView?.frameElement as Element | null) ?? null
-            } catch {
-              cur = null
-            }
-            depth++
-            continue
-          }
-          cur = stepUp(cur)
-          depth++
-        }
-
-        // Pinned occluder under a point: the nearest fixed/sticky ancestor of
-        // whatever elementFromPoint hits there — unless it's the target itself,
-        // one of its descendants, or one of its ancestors (a fixed scroll
-        // container is the thing we scroll, not an occluder). Only pinned
-        // occluders count: anything that scrolls WITH the target (open dropdown
-        // layers, decorative wrappers) would re-occlude after every scroll and
-        // wedge the retry loop into its timeout.
-        // elementFromPoint that descends into same-origin iframes at the point,
-        // translating into each frame's viewport coordinates as it goes.
-        const hitAtPoint = (x: number, y: number): Element | null => {
-          let hit = document.elementFromPoint(x, y)
-          for (;;) {
-            if (!hit || (hit.tagName !== 'IFRAME' && hit.tagName !== 'FRAME')) return hit
-            let inner: Document | null = null
-            try {
-              inner = (hit as HTMLIFrameElement).contentDocument
-            } catch {
-              inner = null // cross-origin
-            }
-            if (!inner) return hit
-            const fr = hit.getBoundingClientRect()
-            x -= fr.x + (hit as HTMLElement).clientLeft
-            y -= fr.y + (hit as HTMLElement).clientTop
-            const next = inner.elementFromPoint(x, y)
-            if (!next) return hit
-            hit = next
-          }
-        }
-        // `contains` across shadow and same-origin frame boundaries.
-        const containsDeep = (ancestor: Element, node: Element | null): boolean => {
-          let n: Element | null = node
-          while (n) {
-            if (n === ancestor) return true
-            n = stepUp(n)
-          }
-          return false
-        }
-        const pinnedRectAt = (x: number, y: number): { top: number; bottom: number } | null => {
-          const hit = hitAtPoint(x, y)
-          if (!hit || hit === el || containsDeep(el, hit) || containsDeep(hit, el)) return null
-          let n: Element | null = hit
-          while (n && n !== document.body && n !== document.documentElement) {
-            if (isFrameDocRoot(n) || (n.ownerDocument && n === n.ownerDocument.body)) {
-              n = stepUp(n)
-              continue
-            }
-            const pos = styleOf(n).position
-            if (pos === 'fixed' || pos === 'sticky') {
-              return containsDeep(n, el) ? null : rectOf(n)
-            }
-            n = stepUp(n)
-          }
-          return null
-        }
-
-        // Clear band: the viewport minus pinned bars, probed at the target's
-        // column. Iterates a few levels for stacked bars (banner over header).
-        let clearTop = arg.pad
-        let clearBottom = vh - arg.pad
-        const probeX = Math.min(Math.max(elRect.left + elRect.width / 2, 5), vw - 5)
-        for (let i = 0; i < 4; i++) {
-          const r = pinnedRectAt(probeX, clearTop + 1)
-          if (r && r.bottom > clearTop) clearTop = Math.min(r.bottom + 2, vh)
-          else break
-        }
-        for (let i = 0; i < 4; i++) {
-          const r = pinnedRectAt(probeX, clearBottom - 1)
-          if (r && r.top < clearBottom) clearBottom = Math.max(r.top - 2, 0)
-          else break
-        }
-        if (clearBottom - clearTop < 40) {
-          // Band collapsed (e.g. a full-screen fixed overlay): fall back to the
-          // padded viewport so scroll math stays sane; the region occlusion
-          // check below still reports the target unreachable if it truly is.
-          clearTop = arg.pad
-          clearBottom = vh - arg.pad
-        }
-
-        // Visible band of a chain scroller: for an iframe doc root that's the
-        // frame ELEMENT's box (the content box is taller than the viewport).
-        const scrollerRectOf = (c: Element): Rect => {
-          if (isFrameDocRoot(c)) {
-            try {
-              const fe = c.ownerDocument.defaultView?.frameElement as Element | null
-              if (fe) return rectOf(fe)
-            } catch { /* cross-origin — fall through */ }
-          }
-          return rectOf(c)
-        }
-        // Click region: the target's on-screen clip. Element rect ∩ every
-        // ancestor scroller's rect ∩ clear band ∩ viewport edges.
-        let clipTop = clearTop
-        let clipBottom = clearBottom
-        let clipLeft = arg.edge
-        let clipRight = vw - arg.edge
-        for (const c of chain) {
-          const cr = scrollerRectOf(c)
-          clipTop = Math.max(clipTop, cr.top)
-          clipBottom = Math.min(clipBottom, cr.bottom)
-          clipLeft = Math.max(clipLeft, cr.left)
-          clipRight = Math.min(clipRight, cr.right)
-        }
-        const regionLeft = Math.max(elRect.left, clipLeft)
-        const regionTop = Math.max(elRect.top, clipTop)
-        const regionRight = Math.min(elRect.right, clipRight)
-        const regionBottom = Math.min(elRect.bottom, clipBottom)
-        const region =
-          regionRight - regionLeft >= 6 && regionBottom - regionTop >= 6
-            ? {
-                x: regionLeft,
-                y: regionTop,
-                width: regionRight - regionLeft,
-                height: regionBottom - regionTop,
-              }
-            : null
-
-        // Occlusion across the click region (center + 4 interior points), not
-        // just the element center — a target straddling a footer edge has a
-        // clear center but a covered click region.
-        let occluded = false
-        if (region) {
-          const cx = region.x + region.width / 2
-          const cy = region.y + region.height / 2
-          const samples: Array<[number, number]> = [
-            [cx, cy],
-            [cx - region.width * 0.3, cy],
-            [cx + region.width * 0.3, cy],
-            [cx, cy - region.height * 0.3],
-            [cx, cy + region.height * 0.3],
-          ]
-          occluded = samples.some(([px, py]) => pinnedRectAt(Math.round(px), Math.round(py)) != null)
-        }
-
-        const bandHeight = clipBottom - clipTop
-        const fullyVisible = elRect.top >= clipTop && elRect.bottom <= clipBottom
-        // A target taller than its band can never be fully contained; it's in
-        // view once it fills most of the band.
-        const tallTarget = elRect.height > bandHeight - 4
-        const inView =
-          region != null &&
-          !occluded &&
-          (fullyVisible || (tallTarget && region.height >= bandHeight * 0.6))
-
-        // Chosen scroller: innermost ancestor whose scroll can actually MOVE the
-        // target toward finishPosition inside ITS visible band (its rect ∩ outer
-        // scroller rects ∩ clear band). delta 0 = exhausted (or already placed):
-        // escalate to the next ancestor, ending at the page when permitted.
-        let chosen: HTMLElement | null = null
-        let chosenDelta = 0
-        let chosenIsPage = false
-        let hoverTop = clearTop
-        let hoverBottom = clearBottom
-        let hoverLeft = 5
-        let hoverRight = vw - 5
-        const steps = chain.length + (pageCanMoveTarget ? 1 : 0)
-        for (let i = 0; i < steps; i++) {
-          const isPageStep = i === chain.length
-          const node = isPageStep ? (document.documentElement as HTMLElement) : chain[i]
-          let bTop = clearTop
-          let bBottom = clearBottom
-          let bLeft = 5
-          let bRight = vw - 5
-          if (!isPageStep) {
-            const r = scrollerRectOf(node)
-            bTop = Math.max(bTop, r.top)
-            bBottom = Math.min(bBottom, r.bottom)
-            bLeft = Math.max(bLeft, r.left)
-            bRight = Math.min(bRight, r.right)
-            for (let j = i + 1; j < chain.length; j++) {
-              const outer = scrollerRectOf(chain[j])
-              bTop = Math.max(bTop, outer.top)
-              bBottom = Math.min(bBottom, outer.bottom)
-              bLeft = Math.max(bLeft, outer.left)
-              bRight = Math.min(bRight, outer.right)
-            }
-          }
-          const bH = bBottom - bTop
-          // A band too small to ever show the target can't help — skip outward.
-          if (bH < Math.min(elRect.height, 24) + 6) continue
-          const desiredTop = bTop + Math.max(0, bH - elRect.height) * arg.finishPosition
-          // An iframe doc root scrolls through its own window (Gecko reports
-          // scrollTop 0 on document roots).
-          const frameWin = isFrameDocRoot(node) ? node.ownerDocument.defaultView! : null
-          const current = isPageStep ? window.scrollY : frameWin ? frameWin.scrollY : node.scrollTop
-          const maxScroll = isPageStep
-            ? Math.max(0, document.documentElement.scrollHeight - vh)
-            : frameWin
-              ? Math.max(0, node.scrollHeight - frameWin.innerHeight)
-              : Math.max(0, node.scrollHeight - node.clientHeight)
-          const target = Math.max(0, Math.min(current + (elRect.top - desiredTop), maxScroll))
-          const delta = target - current
-          if (Math.abs(delta) >= 1) {
-            chosen = node
-            chosenDelta = delta
-            chosenIsPage = isPageStep
-            hoverTop = bTop
-            hoverBottom = bBottom
-            hoverLeft = bLeft
-            hoverRight = bRight
-            break
-          }
-        }
-
-        // Hover: the NEAREST point to the cursor from which a wheel actually
-        // reaches the chosen scroller. Humans scroll from wherever the mouse
-        // sits and nudge toward a gutter when an inner scroller (open dropdown
-        // list, overflowing textarea) would swallow the wheel — so probe small
-        // lateral offsets first, then small vertical ones. For a container the
-        // walk up from the hit must MEET the scroller: a point over a fixed
-        // footer never scrolls the container behind it. The hover stays inside
-        // the scroller's visible band ∩ clear band, never over a pinned bar.
-        const clampHX = (x: number) =>
-          Math.min(Math.max(x, Math.max(hoverLeft + 5, 5)), Math.min(hoverRight - 5, vw - 5))
-        const clampHY = (y: number) =>
-          Math.min(Math.max(y, Math.max(hoverTop + 5, 5)), Math.min(hoverBottom - 5, vh - 5))
-        // Wheel routing matches Chromium: a wheel is consumed by the nearest
-        // scrollable ancestor that can still MOVE in the wheel's direction, and
-        // bubbles past one already at its limit. Treating every overflow:auto
-        // wrapper as a trap (the old probe) nudged the cursor sideways on
-        // layouts full of decorative scroll wrappers even though the wheel
-        // would have landed fine where it sat.
-        const consumesWheel = (n: Element): boolean => {
-          if (isFrameDocRoot(n)) {
-            // A wheel over a scrollable iframe doc is consumed by the frame's
-            // window until it hits its limit, then bubbles to the host.
-            const w = n.ownerDocument.defaultView!
-            return chosenDelta > 0
-              ? w.scrollY + w.innerHeight < n.scrollHeight - 1
-              : w.scrollY > 1
-          }
-          const st = styleOf(n)
-          if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') return false
-          if (n.scrollHeight <= n.clientHeight + 1) return false
-          return chosenDelta > 0
-            ? n.scrollTop + n.clientHeight < n.scrollHeight - 1
-            : n.scrollTop > 1
-        }
-        const wheelReaches = (x: number, y: number): boolean => {
-          const hit = hitAtPoint(x, y)
-          if (!hit) return chosenIsPage
-          let n: Element | null = hit
-          while (n && n !== document.documentElement && n !== document.body) {
-            if (!chosenIsPage && n === chosen) return true
-            if (consumesWheel(n)) return false
-            n = stepUp(n)
-          }
-          return chosenIsPage
-        }
-        let hoverX = clampHX(arg.fromX)
-        let hoverY = clampHY(arg.fromY)
-        if (chosen) {
-          // Equal-distance probes break toward the side with more gutter room,
-          // so asymmetric layouts don't accumulate a systematic drift from a
-          // fixed left-first order.
-          const roomLeft = arg.fromX - Math.max(hoverLeft + 5, 5)
-          const roomRight = Math.min(hoverRight - 5, vw - 5) - arg.fromX
-          const lateral =
-            roomRight > roomLeft
-              ? [0, 60, -60, 120, -120, 200, -200]
-              : [0, -60, 60, -120, 120, -200, 200]
-          const baseY = hoverY
-          probe: for (const dy of [0, -40, 40, -90, 90]) {
-            const y = clampHY(baseY + dy)
-            for (const dx of lateral) {
-              const x = clampHX(arg.fromX + dx)
-              if (wheelReaches(x, y)) {
-                hoverX = x
-                hoverY = y
-                break probe
-              }
-            }
-          }
-        }
-        return { inView, deltaY: chosenDelta, hoverX, hoverY, isPage: chosenIsPage, region }
-      },
-      { selector, finishPosition, pad, edge: VIEWPORT_PADDING, fromX: from.x, fromY: from.y },
-    )) as ScrollPlan | null
+    const { x: fromX, y: fromY } = this.previous
+    return this.driver.evaluate(SCROLL_PLAN_FOR_SELECTOR, {
+      selector,
+      finishPosition,
+      pad: SCROLL_PAD,
+      edge: SCROLL_EDGE,
+      fromX,
+      fromY,
+    })
   }
 
   /** Execute one planned scroll pass: hover over the chosen scroller, wheel the delta. */
@@ -1234,13 +773,12 @@ export class Cursor {
     // Calibration reads window scroll, so only calibrate off page scrolls (the
     // wheel→px DPR ratio is identical for containers).
     const pre = plan.isPage ? (await scrollMetricsOf(this.driver)).offset : null
-    const speedIrregularity = opts.realism?.speedIrregularity ?? this.settings.scroll.realism.speedIrregularity
-    const mouse = this.settings.scroll.device === 'mouse'
-    const events = mouse
-      ? generateWheelPath(wantedDistance, this.rng, this.settings.scroll.wheel)
-      : scrollModel.generateScrollPath(wantedDistance, this.rng, undefined, speedIrregularity)
-    // A wheel moves in whole notches, so calibrate against what was sent.
-    const dispatched = events.reduce((sum, ev) => sum + ev.deltaY, 0)
+    const { events, end, total: dispatched } = wheelWith(wantedDistance, this.rng, {
+      device: this.settings.scroll.device,
+      wheel: this.settings.scroll.wheel,
+      speedIrregularity: opts.realism?.speedIrregularity ?? this.settings.scroll.realism.speedIrregularity,
+    })
+    // A wheel moves in whole notches, so calibrate against the planned total.
     const sf = opts.speedFactor ?? 1
 
     // Emit the gesture on the model's clock, like an input device: never wait
@@ -1253,32 +791,18 @@ export class Cursor {
     // connection, so they arrive in order.
     const sent: Promise<void>[] = []
     const failure: { error?: unknown } = {}
-    const send = (deltaY: number): void => {
-      const wheel = this.driver.wheel(0, deltaY)
+    const start = Date.now()
+    for (const [at, delta] of events) {
+      // An absolute schedule, so timer overshoot doesn't accumulate.
+      await delay(start + at / sf - Date.now())
+      if ('error' in failure) break // e.g. the page closed mid-gesture
+      const wheel = this.driver.wheel(0, delta)
       sent.push(wheel)
       wheel.catch((error: unknown) => {
         if (!('error' in failure)) failure.error = error
       })
     }
-
-    // Batch sub-threshold deltas: Chromium ignores very small wheel deltas.
-    let accumulator = 0
-    const start = Date.now()
-    let due = 0
-    for (const ev of events) {
-      if ('error' in failure) break // e.g. the page closed mid-gesture
-      accumulator += ev.deltaY
-      // A notch is one event however small; only trackpad deltas batch.
-      if (mouse || Math.abs(accumulator) >= 8) {
-        const dispatch = Math.trunc(accumulator)
-        accumulator -= dispatch
-        send(dispatch)
-      }
-      // An absolute schedule, so timer overshoot doesn't accumulate.
-      due += ev.deltaTime / sf
-      await delay(start + due - Date.now())
-    }
-    if (!('error' in failure) && Math.abs(Math.round(accumulator)) >= 1) send(Math.round(accumulator))
+    await delay(start + end / sf - Date.now())
     // Everything must have landed (or failed) before measuring where the
     // scroll ended.
     await Promise.all(sent)
@@ -1323,6 +847,7 @@ export class Cursor {
     const pos = { x: Math.round(clamped.x), y: Math.round(clamped.y) }
     await this.driver.move(pos.x, pos.y)
     this.previous = pos
+    this.placed = true
   }
 
   /** Release backend resources (CDP sessions, timers). Safe to call twice. */

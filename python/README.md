@@ -66,6 +66,19 @@ cursor = create_cursor(from_playwright(page), seed=1234)
 cursor = create_cursor(from_cdp(page), seed=1234)
 ```
 
+## The identity's OS
+
+`create_cursor(page, os="macos")` (or `"windows"`, `"linux"`) matches the input to the OS the
+browser claims: the paste and select-all modifier (Cmd on macOS, Ctrl elsewhere), whether a
+move repeats the position the pointer is already on (only on macOS), the mouse wheel style,
+and which axis a Shift+wheel scroll carries. How long a person takes is the same on every OS.
+
+## Planning without a browser
+
+`plan_move`, `plan_point`, `plan_click`, `plan_type`, `plan_press`, `plan_select_all` and
+`plan_wheel` return the timelines a `Cursor` plays, from an `rng` such as `make_rng(seed)`;
+the Cursor is built on them. See the [project README](https://github.com/JWriter20/Myuri#planning-without-a-browser).
+
 ## Determinism
 
 Seeded Mulberry32 PRNG — the **same seed produces the same numbers as the TypeScript

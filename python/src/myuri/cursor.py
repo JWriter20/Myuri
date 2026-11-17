@@ -11,29 +11,28 @@ from typing import Any, List, Optional, Union
 from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
 from .geometry import (
-    VIEWPORT_PADDING,
+    PlannedPoint,
     clamp_to_browser_bounds,
     get_better_starting_position,
     get_random_box_point,
-    path,
     should_overshoot,
 )
-from .motion.scroll_model import scroll_model
-from .motion.wheel_model import generate_wheel_path
-from .motion.click_model import click_hold_ms, drag_carry_speed, drag_end_ms, drag_start_ms, multi_click_gap_ms, pre_click_dwell_ms
+from .motion.click_model import drag_carry_speed, drag_end_ms, drag_start_ms, pre_click_dwell_ms
 from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
+from .target_os import primary_modifier
 from .page import (
-    _RESOLVER,
     bounding_box_of,
     point_hits_target,
     scroll_metrics_of,
     viewport_of,
     wait_for_element,
 )
+from .plan import WheelSpec, clicks_with, move_with, wheel_style_for, wheel_with
 from .profile import profile_from_seed
 from .rng import generate_random_seed, make_rng
+from .scroll_plan import SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_FOR_SELECTOR
 from .settings import resolve_settings
-from .types import BoundingBox, Vector, overshoot as overshoot_point
+from .types import BoundingBox, Vector
 from .typing_engine.typer import HumanTyper
 
 
@@ -131,189 +130,6 @@ _FOCUSED_FIELD_JS = r"""() => {
 }"""
 
 
-# Container-aware scroll plan (mirror of ``computeScrollPlan`` in js/src/cursor.ts;
-# see that function for the full design commentary). One pass computes:
-#   - the CLEAR BAND: viewport minus pinned (fixed/sticky) bars, probed at the
-#     target's column;
-#   - the CHOSEN SCROLLER: innermost scrollable ancestor that can actually move
-#     the target toward finishPosition inside its visible band, escalating
-#     outward past exhausted scrollers; a position:fixed ancestor drops the page
-#     step entirely (window scroll cannot move anything inside it);
-#   - the CLICK REGION: the target's on-screen clip, with occlusion judged
-#     across the region rather than the center point;
-#   - the HOVER point: nearest point from which a wheel reaches the chosen
-#     scroller, modeling Chromium's routing (a wrapper at its scroll limit in
-#     the wheel's direction bubbles the wheel up, so it is not a trap), with
-#     equal-distance probes breaking toward the roomier gutter.
-_SCROLL_PLAN_JS = (
-    "(arg) => {" + _RESOLVER + """
-  var el = resolve(arg.selector);
-  if (!el) return null;
-  function stepUp(node){
-    if (node.parentElement) return node.parentElement;
-    var r = node.getRootNode ? node.getRootNode() : null;
-    return r && r.host ? r.host : null;
-  }
-  var vh = window.innerHeight || document.documentElement.clientHeight;
-  var vw = window.innerWidth || document.documentElement.clientWidth;
-  var elRect = el.getBoundingClientRect();
-
-  var chain = [];
-  var pageCanMoveTarget = true;
-  var cur = stepUp(el);
-  var depth = 0;
-  while (cur && depth < 60 && cur !== document.documentElement) {
-    var st = getComputedStyle(cur);
-    var scrollable = cur.scrollHeight > cur.clientHeight + 1 &&
-      (st.overflowY === 'scroll' || st.overflowY === 'auto');
-    if (cur === document.body) {
-      if (scrollable && !(document.documentElement.scrollHeight > vh + 10)) chain.push(cur);
-      break;
-    }
-    if (scrollable) chain.push(cur);
-    if (st.position === 'fixed') { pageCanMoveTarget = false; break; }
-    cur = stepUp(cur);
-    depth++;
-  }
-
-  function pinnedRectAt(x, y) {
-    var hit = document.elementFromPoint(x, y);
-    if (!hit || hit === el || el.contains(hit) || hit.contains(el)) return null;
-    var n = hit;
-    while (n && n !== document.body && n !== document.documentElement) {
-      var pos = getComputedStyle(n).position;
-      if (pos === 'fixed' || pos === 'sticky') return n.contains(el) ? null : n.getBoundingClientRect();
-      n = stepUp(n);
-    }
-    return null;
-  }
-
-  var clearTop = arg.pad;
-  var clearBottom = vh - arg.pad;
-  var probeX = Math.min(Math.max(elRect.left + elRect.width / 2, 5), vw - 5);
-  var i, r;
-  for (i = 0; i < 4; i++) {
-    r = pinnedRectAt(probeX, clearTop + 1);
-    if (r && r.bottom > clearTop) clearTop = Math.min(r.bottom + 2, vh); else break;
-  }
-  for (i = 0; i < 4; i++) {
-    r = pinnedRectAt(probeX, clearBottom - 1);
-    if (r && r.top < clearBottom) clearBottom = Math.max(r.top - 2, 0); else break;
-  }
-  if (clearBottom - clearTop < 40) { clearTop = arg.pad; clearBottom = vh - arg.pad; }
-
-  var clipTop = clearTop, clipBottom = clearBottom, clipLeft = arg.edge, clipRight = vw - arg.edge;
-  var cr;
-  for (i = 0; i < chain.length; i++) {
-    cr = chain[i].getBoundingClientRect();
-    clipTop = Math.max(clipTop, cr.top); clipBottom = Math.min(clipBottom, cr.bottom);
-    clipLeft = Math.max(clipLeft, cr.left); clipRight = Math.min(clipRight, cr.right);
-  }
-  var regionLeft = Math.max(elRect.left, clipLeft);
-  var regionTop = Math.max(elRect.top, clipTop);
-  var regionRight = Math.min(elRect.right, clipRight);
-  var regionBottom = Math.min(elRect.bottom, clipBottom);
-  var region = (regionRight - regionLeft >= 6 && regionBottom - regionTop >= 6)
-    ? { x: regionLeft, y: regionTop, width: regionRight - regionLeft, height: regionBottom - regionTop }
-    : null;
-
-  var occluded = false;
-  if (region) {
-    var ccx = region.x + region.width / 2, ccy = region.y + region.height / 2;
-    var samples = [
-      [ccx, ccy],
-      [ccx - region.width * 0.3, ccy], [ccx + region.width * 0.3, ccy],
-      [ccx, ccy - region.height * 0.3], [ccx, ccy + region.height * 0.3]
-    ];
-    for (i = 0; i < samples.length; i++) {
-      if (pinnedRectAt(Math.round(samples[i][0]), Math.round(samples[i][1])) != null) { occluded = true; break; }
-    }
-  }
-
-  var bandHeight = clipBottom - clipTop;
-  var fullyVisible = elRect.top >= clipTop && elRect.bottom <= clipBottom;
-  var tallTarget = elRect.height > bandHeight - 4;
-  var inView = region != null && !occluded &&
-    (fullyVisible || (tallTarget && region.height >= bandHeight * 0.6));
-
-  var chosen = null, chosenDelta = 0, chosenIsPage = false;
-  var hoverTop = clearTop, hoverBottom = clearBottom, hoverLeft = 5, hoverRight = vw - 5;
-  var steps = chain.length + (pageCanMoveTarget ? 1 : 0);
-  for (i = 0; i < steps; i++) {
-    var isPageStep = i === chain.length;
-    var node = isPageStep ? document.documentElement : chain[i];
-    var bTop = clearTop, bBottom = clearBottom, bLeft = 5, bRight = vw - 5;
-    if (!isPageStep) {
-      var nr = node.getBoundingClientRect();
-      bTop = Math.max(bTop, nr.top); bBottom = Math.min(bBottom, nr.bottom);
-      bLeft = Math.max(bLeft, nr.left); bRight = Math.min(bRight, nr.right);
-      for (var j = i + 1; j < chain.length; j++) {
-        var outer = chain[j].getBoundingClientRect();
-        bTop = Math.max(bTop, outer.top); bBottom = Math.min(bBottom, outer.bottom);
-        bLeft = Math.max(bLeft, outer.left); bRight = Math.min(bRight, outer.right);
-      }
-    }
-    var bH = bBottom - bTop;
-    if (bH < Math.min(elRect.height, 24) + 6) continue;
-    var desiredTop = bTop + Math.max(0, bH - elRect.height) * arg.finishPosition;
-    var current = isPageStep ? window.scrollY : node.scrollTop;
-    var maxScroll = isPageStep
-      ? Math.max(0, document.documentElement.scrollHeight - vh)
-      : Math.max(0, node.scrollHeight - node.clientHeight);
-    var target = Math.max(0, Math.min(current + (elRect.top - desiredTop), maxScroll));
-    var delta = target - current;
-    if (Math.abs(delta) >= 1) {
-      chosen = node; chosenDelta = delta; chosenIsPage = isPageStep;
-      hoverTop = bTop; hoverBottom = bBottom; hoverLeft = bLeft; hoverRight = bRight;
-      break;
-    }
-  }
-
-  function clampHX(x){ return Math.min(Math.max(x, Math.max(hoverLeft + 5, 5)), Math.min(hoverRight - 5, vw - 5)); }
-  function clampHY(y){ return Math.min(Math.max(y, Math.max(hoverTop + 5, 5)), Math.min(hoverBottom - 5, vh - 5)); }
-  function consumesWheel(n){
-    var st = getComputedStyle(n);
-    if (st.overflowY !== 'auto' && st.overflowY !== 'scroll') return false;
-    if (n.scrollHeight <= n.clientHeight + 1) return false;
-    return chosenDelta > 0
-      ? n.scrollTop + n.clientHeight < n.scrollHeight - 1
-      : n.scrollTop > 1;
-  }
-  function wheelReaches(x, y){
-    var hit = document.elementFromPoint(x, y);
-    if (!hit) return chosenIsPage;
-    var n = hit;
-    while (n && n !== document.documentElement && n !== document.body) {
-      if (!chosenIsPage && n === chosen) return true;
-      if (consumesWheel(n)) return false;
-      n = stepUp(n);
-    }
-    return chosenIsPage;
-  }
-  var hoverX = clampHX(arg.fromX);
-  var hoverY = clampHY(arg.fromY);
-  if (chosen) {
-    var roomLeft = arg.fromX - Math.max(hoverLeft + 5, 5);
-    var roomRight = Math.min(hoverRight - 5, vw - 5) - arg.fromX;
-    var lateral = roomRight > roomLeft
-      ? [0, 60, -60, 120, -120, 200, -200]
-      : [0, -60, 60, -120, 120, -200, 200];
-    var dys = [0, -40, 40, -90, 90];
-    var baseY = hoverY;
-    var found = false;
-    for (var a = 0; a < dys.length && !found; a++) {
-      var y = clampHY(baseY + dys[a]);
-      for (var b = 0; b < lateral.length; b++) {
-        var x = clampHX(arg.fromX + lateral[b]);
-        if (wheelReaches(x, y)) { hoverX = x; hoverY = y; found = true; break; }
-      }
-    }
-  }
-  return { inView: inView, deltaY: chosenDelta, hoverX: hoverX, hoverY: hoverY, isPage: chosenIsPage, region: region };
-}"""
-)
-
-
 def _pick(opt: Any, name: str, default: Any) -> Any:
     value = getattr(opt, name, None) if opt is not None else None
     return default if value is None else value
@@ -349,7 +165,16 @@ class Cursor:
         perform_random_moves_initially: bool = False,
         defaults: Optional[dict] = None,
         select_all_modifier: Optional[str] = None,
+        os: Optional[str] = None,
     ) -> None:
+        if os is not None and select_all_modifier is not None and select_all_modifier != primary_modifier(os):
+            raise ValueError(f"myuri: select_all_modifier {select_all_modifier} is not select-all on {os}")
+        # The OS the browser claims: it picks the paste modifier, whether a move
+        # repeats a position and how a mouse wheel scrolls (target_os.py).
+        # Timing is the same on every OS.
+        self._os = os
+        if os is not None:
+            driver.os = os
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
         self._rng = make_rng(self._seed)
@@ -363,12 +188,15 @@ class Cursor:
             self._settings = profile_from_seed(self._seed)
         else:
             self._settings = resolve_settings(None)
+        self._settings.scroll.wheel.style = wheel_style_for(os, settings)
         self._defaults = defaults or {}
         # Opt-in keyboard select-all for clear_existing. Off by default: the
         # modifier reveals the real OS (pages read ctrlKey/metaKey, and browsers
         # only honor the host OS's one), so fields are cleared by triple-click.
         self._select_all_modifier = select_all_modifier
         self._previous = start or get_better_starting_position(dimensions, self._rng)
+        # The browser's pointer is at _previous (until the first move it is only a guess).
+        self._placed = False
         # time.monotonic() of the last mouse move, for the pause before a press.
         self._last_move_at = 0.0
         self._is_moving = False
@@ -456,55 +284,61 @@ class Cursor:
             self._schedule_random_move()
 
     # ---- primitive motion ----
-    async def _press(self, button: str, click_count: int, hold_ms: Optional[float] = None) -> None:
-        """Press and release a button where the cursor is, timed like a person.
-
-        The first click of a gesture waits a drawn beat after the last move, and
-        the button is held for a drawn time (see ``motion/click_model.py``).
+    async def _clicks(self, button: str, first: int, last: int, hold_ms: Optional[float] = None) -> None:
+        """Clicks ``first``..``last`` of a multi-click where the cursor is,
+        timed like a person (see ``motion/click_model.py``): click 1 waits a
+        drawn beat after the last move, and each button is held a drawn time.
         Drivers written before ``click_count``/``hold_ms`` get what they take;
         one without ``click_count`` makes plain clicks, so clearing a field
         then reports it as not cleared.
         """
-        if click_count == 1:
-            await _delay(self._last_move_at * 1000.0 + pre_click_dwell_ms(self._rng) - time.monotonic() * 1000.0)
-        drawn = click_hold_ms(self._rng)
-        hold = drawn if hold_ms is None else hold_ms
+        lead_ms, presses = clicks_with(self._rng, first, last)
+        await _delay(self._last_move_at * 1000.0 + lead_ms - time.monotonic() * 1000.0 if first == 1 else lead_ms)
         click = self._driver.click
-        if _accepts_positional(click, 3):
-            await click(button, click_count, hold)
-        elif _accepts_positional(click, 2):
-            await click(button, click_count)
-        else:
-            await click(button)
-
-    async def _trace_path(self, vectors) -> None:
-        if not vectors:
-            return
-        vp = await viewport_of(self._driver)
-        prev_t = vectors[0].timestamp
-        for v in vectors:
-            if self._driver.is_closed():
-                return
-            clamped = clamp_to_browser_bounds(v.x, v.y, vp)
-            pos = Vector(round(clamped.x), round(clamped.y))
-            target_delta = v.timestamp - prev_t
-            prev_t = v.timestamp
-            t0 = time.monotonic()
-            await self._driver.move(pos.x, pos.y)
-            self._previous = pos
-            self._last_move_at = time.monotonic()
-            await _delay(target_delta - (time.monotonic() - t0) * 1000.0)
+        for i, (down, up) in enumerate(presses):
+            if i > 0:
+                await _delay(down - presses[i - 1][1])
+            hold = up - down if hold_ms is None else hold_ms
+            if _accepts_positional(click, 3):
+                await click(button, first + i, hold)
+            elif _accepts_positional(click, 2):
+                await click(button, first + i)
+            else:
+                await click(button)
 
     async def _move_along(self, destination: Vector, options, allow_overshoot: bool) -> None:
-        if allow_overshoot:
-            o = overshoot_point(destination, self._settings.overshoot.radius, self._rng)
-            await self._trace_path(path(self._previous, o, options, self._rng))
-            dwell = self._settings.overshoot.dwell
-            await _delay(dwell.min_ms + self._rng() * max(0, dwell.max_ms - dwell.min_ms))
-            speed = (_pick(options, "move_speed", 1)) * self._settings.overshoot.correction_speed_factor
-            await self._trace_path(path(self._previous, destination, MoveToOptions(move_speed=speed), self._rng))
-        else:
-            await self._trace_path(path(self._previous, destination, options, self._rng))
+        vp = await viewport_of(self._driver)
+
+        def settle(p: Vector) -> Vector:
+            clamped = clamp_to_browser_bounds(p.x, p.y, vp)
+            return Vector(round(clamped.x), round(clamped.y))
+
+        points = move_with(
+            self._previous,
+            destination,
+            self._rng,
+            move_speed=_pick(options, "move_speed", None),
+            overshoot=allow_overshoot,
+            settings=self._settings.overshoot,
+            settle=settle,
+        )
+        await self._trace_path(points, settle)
+
+    async def _trace_path(self, points: List[PlannedPoint], settle) -> None:
+        # An absolute schedule, so timer overshoot doesn't accumulate.
+        start = time.monotonic() * 1000.0
+        for p in points:
+            if self._driver.is_closed():
+                return
+            await _delay(start + p.t - time.monotonic() * 1000.0)
+            pos = settle(p)
+            # Only macOS reports a mouse that has not left its pixel; elsewhere it sends nothing.
+            if self._placed and self._os != "macos" and pos == self._previous:
+                continue
+            await self._driver.move(pos.x, pos.y)
+            self._previous = pos
+            self._placed = True
+            self._last_move_at = time.monotonic()
 
     async def move_to(self, destination: Vector, options: Optional[MoveToOptions] = None) -> None:
         was_random = self._start_action()
@@ -674,10 +508,7 @@ class Cursor:
                     await self._driver.move(self._previous.x + (self._rng() - 0.5) * 2, self._previous.y + (self._rng() - 0.5) * 2)
                     await _delay(15 + self._rng() * 10)
             count = max(1, min(3, round(_pick(options, "click_count", 1) or 1)))
-            for click_count in range(1, count + 1):
-                if click_count > 1:
-                    await _delay(multi_click_gap_ms(self._rng))
-                await self._press(button, click_count, _pick(options, "hold_ms", None))
+            await self._clicks(button, 1, count, _pick(options, "hold_ms", None))
             await _delay(max(_pick(options, "wait_for_click", 50), 15))
         finally:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
@@ -723,10 +554,7 @@ class Cursor:
                 first = field["firstLine"]
                 await self._move_along(Vector(first["x"] + self._rng() * 12, first["y"] + (self._rng() - 0.5) * 3), None, False)
                 first_click = 1
-            for click_count in range(first_click, 4):
-                if click_count > 1:
-                    await _delay(multi_click_gap_ms(self._rng))
-                await self._press("left", click_count)
+            await self._clicks("left", first_click, 3)
             if field["lines"] > 1:
                 await _delay(120 + self._rng() * 120)
                 await self._driver.down("Shift")
@@ -787,15 +615,14 @@ class Cursor:
             await self._end_action(was_random, 0, False)
 
     async def _compute_scroll_plan(self, selector: str, finish_position: float) -> Optional[dict]:
-        """One planning pass; see ``_SCROLL_PLAN_JS`` for what it computes."""
-        pad = max(20, VIEWPORT_PADDING + 5)
+        """One planning pass; see ``scroll_plan.py`` for what it computes."""
         return await self._driver.evaluate(
-            _SCROLL_PLAN_JS,
+            SCROLL_PLAN_FOR_SELECTOR,
             {
                 "selector": selector,
                 "finishPosition": finish_position,
-                "pad": pad,
-                "edge": VIEWPORT_PADDING,
+                "pad": SCROLL_PAD,
+                "edge": SCROLL_EDGE,
                 "fromX": self._previous.x,
                 "fromY": self._previous.y,
             },
@@ -819,16 +646,9 @@ class Cursor:
         speed_irregularity = getattr(realism, "speed_irregularity", None) if realism else None
         if speed_irregularity is None:
             speed_irregularity = self._settings.scroll.realism.speed_irregularity
-        mouse = self._settings.scroll.device == "mouse"
-        if mouse:
-            wheel = self._settings.scroll.wheel
-            events = generate_wheel_path(
-                wanted, self._rng, wheel.style, wheel.px_per_notch, wheel.px_per_line
-            )
-        else:
-            events = scroll_model.generate_scroll_path(wanted, self._rng, None, speed_irregularity)
-        # A wheel moves in whole notches, so calibrate against what was sent.
-        dispatched = sum(ev.delta_y for ev in events)
+        spec = WheelSpec(self._settings.scroll.device, self._settings.scroll.wheel, speed_irregularity)
+        # A wheel moves in whole notches, so calibrate against the planned total.
+        events, end, dispatched = wheel_with(wanted, self._rng, spec)
         sf = _pick(options, "speed_factor", self._settings.scroll.speed_factor)
 
         # Emit the gesture on the model's clock, like an input device: never wait
@@ -845,24 +665,14 @@ class Cursor:
         def failed() -> bool:  # e.g. the page closed mid-gesture
             return any(s.done() and not s.cancelled() and s.exception() for s in sent)
 
-        # Batch sub-threshold deltas: Chromium ignores very small wheel deltas.
-        accumulator = 0.0
         start = time.monotonic() * 1000.0
-        due = 0.0
-        for ev in events:
+        for at, delta in events:
+            # An absolute schedule, so timer overshoot doesn't accumulate.
+            await _delay(start + at / sf - time.monotonic() * 1000.0)
             if failed():
                 break
-            accumulator += ev.delta_y
-            # A notch is one event however small; only trackpad deltas batch.
-            if mouse or abs(accumulator) >= 8:
-                dispatch = int(accumulator)
-                accumulator -= dispatch
-                sent.append(asyncio.ensure_future(self._driver.wheel(0, dispatch)))
-            # An absolute schedule, so timer overshoot doesn't accumulate.
-            due += ev.delta_time / sf
-            await _delay(start + due - time.monotonic() * 1000.0)
-        if not failed() and abs(round(accumulator)) >= 1:
-            sent.append(asyncio.ensure_future(self._driver.wheel(0, round(accumulator))))
+            sent.append(asyncio.ensure_future(self._driver.wheel(0, delta)))
+        await _delay(start + end / sf - time.monotonic() * 1000.0)
         # Everything must have landed (or failed) before measuring where the
         # scroll ended; re-raise the first failure, having retrieved them all.
         results = await asyncio.gather(*sent, return_exceptions=True)
@@ -905,6 +715,7 @@ class Cursor:
         pos = Vector(round(clamped.x), round(clamped.y))
         await self._driver.move(pos.x, pos.y)
         self._previous = pos
+        self._placed = True
 
     async def dispose(self) -> None:
         if self._disposed:

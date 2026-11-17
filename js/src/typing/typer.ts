@@ -94,6 +94,18 @@ function flatten(history: TypingEvent[]): StrokeInfo[] {
   return out
 }
 
+/** A session's typing speed, drawn around `wpm`. */
+export function drawSessionWpm(rng: Rng, wpm: number): number {
+  return Math.max(10, gaussian(rng, wpm, WPM_STD))
+}
+
+/** What typing `text` presses (typos and corrections included) and when. */
+export function planTyping(text: string, mistakeMultiplier: number, rng: Rng, timing: KeystrokeTiming) {
+  const { history } = new MarkovTyper(text, mistakeMultiplier, rng).run()
+  const strokes = flatten(history)
+  return { strokes, ...timing.plan(strokes.map((s) => s.stroke)) }
+}
+
 export class HumanTyper {
   private input: TyperInput
   private wpm: number
@@ -117,16 +129,14 @@ export class HumanTyper {
     this.onBackspaceCallback = options?.onBackspace
     this.rng = options?.rng ?? defaultRng
     this.clock = options?.clock ?? realClock
-    this.sessionWpm = Math.max(10, gaussian(this.rng, this.wpm, WPM_STD))
+    this.sessionWpm = drawSessionWpm(this.rng, this.wpm)
     this.timing = new KeystrokeTiming(this.sessionWpm, this.rng)
   }
 
   /** Type text with human-like timing, errors, and corrections. */
   public async type(text: string): Promise<void> {
     if (!text) return
-    const { history } = new MarkovTyper(text, this.mistakeMultiplier, this.rng).run()
-    const strokes = flatten(history)
-    const { actions, downAt } = this.timing.plan(strokes.map((s) => s.stroke))
+    const { strokes, actions, downAt } = planTyping(text, this.mistakeMultiplier, this.rng, this.timing)
     await this.play(actions, (a) => {
       if (a.stroke === undefined || a.type === 'up') return
       const info = strokes[a.stroke]
@@ -192,7 +202,7 @@ export class HumanTyper {
    */
   public setWpm(wpm: number): void {
     this.wpm = wpm
-    this.sessionWpm = Math.max(10, gaussian(this.rng, this.wpm, WPM_STD))
+    this.sessionWpm = drawSessionWpm(this.rng, this.wpm)
     this.timing.setWpm(this.sessionWpm)
   }
 

@@ -352,18 +352,33 @@ class KeystrokeTiming:
         actions.sort(key=lambda a: (a[0].at, a[1]))
         return [a for a, _ in actions], down_at
 
+    def plan_chord(self, modifiers: List[str], key: str) -> List[KeyAction]:
+        """A chord such as Control+a or Meta+Shift+z: each modifier goes down a
+        Shift-like lead after the one before, the key after the last, and each
+        modifier comes up just after the key does (innermost first)."""
+        out: List[KeyAction] = []
+        at = 0.0
+        for i, m in enumerate(modifiers):
+            if i > 0:
+                at += self._shift_lead()
+            out.append(KeyAction(at, "down", m))
+        key_down = at + self._shift_lead() if modifiers else 0.0
+        key_up = key_down + self.hold(key)
+        out += [KeyAction(key_down, "down", key), KeyAction(key_up, "up", key)]
+        for m in reversed(modifiers):
+            up = max(
+                key_down + SHIFT_MIN_AFTER_KEY,
+                key_up + gaussian(self._rng, SHIFT_TRAIL_MEAN, SHIFT_TRAIL_SD),
+            )
+            out.append(KeyAction(up, "up", m))
+        out.sort(key=lambda a: a.at)
+        return out
+
     def plan_select_all_delete(self, modifier: str) -> List[KeyAction]:
-        """Modifier down, 'a', modifier up just after 'a' comes up, then Backspace."""
-        out = [KeyAction(0.0, "down", modifier)]
-        a_down = self._shift_lead()
-        a_up = a_down + self.hold("a")
-        out.append(KeyAction(a_down, "down", "a"))
-        out.append(KeyAction(a_up, "up", "a"))
-        mod_up = max(
-            a_down + SHIFT_MIN_AFTER_KEY,
-            a_up + gaussian(self._rng, SHIFT_TRAIL_MEAN, SHIFT_TRAIL_SD),
-        )
-        out.append(KeyAction(mod_up, "up", modifier))
+        """Select-all with ``modifier``, then one Backspace once the modifier is up."""
+        out = self.plan_chord([modifier], "a")
+        a_down = next(a.at for a in out if a.type == "down" and a.key == "a")
+        mod_up = next(a.at for a in out if a.type == "up" and a.key == modifier)
         bs_down = max(a_down + self.gap(Stroke("a"), Stroke("Backspace")), mod_up + SHIFT_CLEAR)
         out.append(KeyAction(bs_down, "down", "Backspace"))
         out.append(KeyAction(bs_down + self.hold("Backspace"), "up", "Backspace"))

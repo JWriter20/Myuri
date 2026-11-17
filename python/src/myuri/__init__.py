@@ -15,7 +15,7 @@ from .drivers import (
     from_cdp,
     from_playwright,
 )
-from .geometry import get_better_starting_position, get_random_box_point, path
+from .geometry import PlannedPoint, get_better_starting_position, get_random_box_point, path
 from .options import (
     ClickOptions,
     DragOptions,
@@ -24,6 +24,22 @@ from .options import (
     RandomMoveOptions,
     ScrollOptions,
     TypeOptions,
+)
+from .target_os import primary_modifier
+from .plan import (
+    SCROLL_EDGE,
+    SCROLL_FINISH_POSITION,
+    SCROLL_PAD,
+    SCROLL_PLAN_JS,
+    KeyStep,
+    WheelStep,
+    plan_click,
+    plan_move,
+    plan_point,
+    plan_press,
+    plan_select_all,
+    plan_type,
+    plan_wheel,
 )
 from .profile import profile_from_seed
 from .rng import SeededRng, gaussian, generate_random_seed, make_rng
@@ -63,6 +79,21 @@ __all__ = [
     "path",
     "get_random_box_point",
     "get_better_starting_position",
+    "primary_modifier",
+    "plan_move",
+    "plan_point",
+    "plan_click",
+    "plan_type",
+    "plan_press",
+    "plan_select_all",
+    "plan_wheel",
+    "PlannedPoint",
+    "KeyStep",
+    "WheelStep",
+    "SCROLL_PLAN_JS",
+    "SCROLL_FINISH_POSITION",
+    "SCROLL_PAD",
+    "SCROLL_EDGE",
     "MoveOptions",
     "ClickOptions",
     "DragOptions",
