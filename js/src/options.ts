@@ -18,16 +18,14 @@ export interface PathOptions {
 }
 
 export interface MoveOptions extends BoxOptions, PathOptions {
-  /** Retries if the cursor misses the element. Default 3. */
+  /** Tries before a miss is thrown. Default: try again until `timeout`. */
   maxTries?: number
   /** Straight-line distance beyond which the move overshoots then corrects. */
   overshootThreshold?: number
-  /** ms to wait for the selector before failing. Default 10000. */
-  waitForSelector?: number
   /** Delay after the move completes (ms). */
   moveDelay?: number
   randomizeMoveDelay?: boolean
-  /** Overall move timeout (ms); aborts the whole attempt. */
+  /** ms to keep trying (waiting for the element, scrolling, retrying a miss). Default 10000. */
   timeout?: number
   /** Selectors whose boxes the destination point must avoid. */
   excludeSelectors?: string | readonly string[]
@@ -44,10 +42,6 @@ export interface ClickOptions extends MoveOptions {
   holdMs?: number
   /** ms to wait after the click before the next action. */
   waitForClick?: number
-  /** Nudge 1px right before clicking. */
-  microJitter?: boolean
-  /** Re-check the target box just before clicking and correct if it moved. */
-  dynamicAdjustment?: boolean
 }
 
 export interface DragOptions extends MoveOptions {
@@ -68,20 +62,19 @@ export interface RandomMoveOptions {
 }
 
 export interface ScrollOptions {
-  delay?: number
   speedFactor?: number
-  overshoot?: number
   /** Where the element lands in the viewport: 0=top, 0.5=center, 1=bottom. */
   finishPosition?: number
   realism?: { speedIrregularity?: number }
-  waitForSelector?: number
+  /** ms to wait for the element. Default 10000. */
+  timeout?: number
+  /** Scroll passes before giving up. Default 3. */
   maxTries?: number
 }
 
 export interface TypeOptions {
-  /** Per-key delay hint (ms); the Markov model is the primary timing source. */
-  delay?: number
-  waitForSelector?: number
+  /** ms to keep trying to click the field. Default 10000. */
+  timeout?: number
   maxTries?: number
   /** Select-all + delete existing content before typing. */
   clearExisting?: boolean

@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs'
 import { chromium, type Browser, type Page } from 'playwright-core'
 import { createCursor } from '../src/index.js'
 import { fromPlaywright } from '../src/drivers/index.js'
-import { boundingBoxOf, pointHitsTarget } from '../src/page.js'
+import { boundingBoxOf } from '../src/page.js'
+import { HIT_TEST_JS, onSelector } from '../src/page-functions.js'
 import { defineDriver } from '../src/drivers/types.js'
 
 /**
@@ -87,13 +88,15 @@ describe.skipIf(!hasChromium)('same-origin iframe piercing (live browser)', () =
     await page.close()
   })
 
-  it('pointHitsTarget sees through the frame boundary', async () => {
+  it('the hit test sees through the frame boundary', async () => {
     await setupPage()
     const driver = defineDriver(fromPlaywright(page))
+    const hit = (x: number, y: number) =>
+      driver.evaluate(onSelector(HIT_TEST_JS), { selector: '#appframe >>> #apply', arg: { x, y, pressing: false } })
     // Center of the apply button in top coords: (120+40+80, 90+30+18).
-    expect(await pointHitsTarget(driver, { x: 240, y: 138 }, '#appframe >>> #apply')).toBe(true)
+    expect(await hit(240, 138)).toBeNull()
     // A point on the host page header must NOT count as hitting the target.
-    expect(await pointHitsTarget(driver, { x: 240, y: 20 }, '#appframe >>> #apply')).toBe(false)
+    expect(await hit(240, 20)).not.toBeNull()
     await page.close()
   })
 

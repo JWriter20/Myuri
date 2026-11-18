@@ -14,13 +14,6 @@ export interface MyuriSettings {
     correctionSpeedFactor: number
     dwell: { minMs: number; maxMs: number }
   }
-  correction: {
-    retrySpread: number
-    retryMoveSpeedFactor: number
-    dynamicAdjustmentShiftThreshold: number
-    dynamicAdjustmentSpeedFactor: number
-    dynamicAdjustmentNoiseScale: number
-  }
   scroll: {
     delay: number
     speedFactor: number
@@ -58,13 +51,6 @@ export const defaultSettings: MyuriSettings = {
     threshold: 500,
     correctionSpeedFactor: 1,
     dwell: { minMs: 20, maxMs: 60 },
-  },
-  correction: {
-    retrySpread: 5,
-    retryMoveSpeedFactor: 1,
-    dynamicAdjustmentShiftThreshold: 5,
-    dynamicAdjustmentSpeedFactor: 1,
-    dynamicAdjustmentNoiseScale: 0.5,
   },
   scroll: {
     delay: 50,

@@ -78,6 +78,13 @@ and which axis a Shift+wheel scroll carries. How long a person takes is the same
 return the timelines a `Cursor` plays, from an `rng` such as `makeRng(seed)`; the Cursor is
 built on them. See the [project README](https://github.com/JWriter20/Myuri#planning-without-a-browser).
 
+## Smart actions on your own host
+
+`new Actions(host, rng, { os, parts })` runs the Cursor's actions (click, scroll into view,
+type) on any host that can send input and run a page function. Pass `parts` to replace a
+step (`move`, `press`, `point`, `reaches`, `intoView`, `wheel`, `type`, `key`) and keep the
+rest. See the [project README](https://github.com/JWriter20/Myuri#smart-actions-on-your-own-host).
+
 ## Determinism
 
 Seeded Mulberry32 PRNG — the **same seed produces the same numbers as the Python

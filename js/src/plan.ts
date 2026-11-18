@@ -288,6 +288,11 @@ export function planWheel(deltaX: number, deltaY: number, rng: Rng, options: Pla
     wheel: { ...settings.scroll.wheel, style: wheelStyleFor(options.os, options.settings) },
     speedIrregularity: settings.scroll.realism.speedIrregularity,
   }
+  return wheelSteps(deltaX, deltaY, rng, options.os, spec)
+}
+
+/** @internal {@link planWheel} with the wheel resolved. */
+export function wheelSteps(deltaX: number, deltaY: number, rng: Rng, os: Os | undefined, spec: WheelSpec): WheelStep[] {
   const out: WheelStep[] = []
   let t = 0
   if (deltaY !== 0) {
@@ -299,11 +304,9 @@ export function planWheel(deltaX: number, deltaY: number, rng: Rng, options: Pla
     out.push(['key', 'Shift', 'down', t])
     t += Math.exp(gaussian(rng, ...SHIFT_WHEEL_LEAD))
     const { events } = wheelWith(deltaX, rng, spec)
-    for (const [at, d] of events) out.push(options.os === 'macos' ? ['wheel', d, 0, t + at] : ['wheel', 0, d, t + at])
+    for (const [at, d] of events) out.push(os === 'macos' ? ['wheel', d, 0, t + at] : ['wheel', 0, d, t + at])
     t = out[out.length - 1][3] + Math.exp(gaussian(rng, ...SHIFT_WHEEL_TRAIL))
     out.push(['key', 'Shift', 'up', t])
   }
   return out
 }
-
-export { SCROLL_PLAN_JS, SCROLL_FINISH_POSITION, SCROLL_PAD, SCROLL_EDGE, type ScrollPlan, type ScrollPlanArgs } from './scroll-plan.js'

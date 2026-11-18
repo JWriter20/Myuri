@@ -18,6 +18,10 @@ export interface ScrollPlan {
    * edge-riding failure mode this exists to prevent).
    */
   region: BoundingBox | null
+  /** The target's border box. */
+  box: BoundingBox
+  /** The target's left and top border widths, which Playwright's `position` is offset by. */
+  borders: [number, number]
 }
 
 /** Where the scroll planner puts the target: 0 top, 0.5 middle, 1 bottom of the clear band. */
@@ -57,7 +61,7 @@ export interface ScrollPlanArgs {
  *
  * Self-contained so it can be serialized into the page: pass it to an
  * `evaluate` with the target element, e.g. Playwright's
- * `handle.evaluate(SCROLL_PLAN_JS, args)`. Null when the element has no box.
+ * `handle.evaluate(SCROLL_PLAN_JS, args)`. Null when the element is not visible.
  */
 export const SCROLL_PLAN_JS = (el: HTMLElement, arg: ScrollPlanArgs): ScrollPlan | null => {
   // Offset of a node's document viewport in top-page coordinates: mouse
@@ -106,6 +110,9 @@ export const SCROLL_PLAN_JS = (el: HTMLElement, arg: ScrollPlanArgs): ScrollPlan
   const vh = window.innerHeight || document.documentElement.clientHeight
   const vw = window.innerWidth || document.documentElement.clientWidth
   const elRect = rectOf(el)
+  const elStyle = styleOf(el)
+  // Not visible, as Playwright defines it: nothing to scroll to or press.
+  if (!(elRect.width > 0 && elRect.height > 0) || elStyle.visibility === 'hidden') return null
 
   // Every scrollable ancestor, innermost first. A position:fixed ancestor
   // is a hard barrier: neither the page nor anything above it can move the
@@ -437,72 +444,14 @@ export const SCROLL_PLAN_JS = (el: HTMLElement, arg: ScrollPlanArgs): ScrollPlan
       }
     }
   }
-  return { inView, deltaY: chosenDelta, hoverX, hoverY, isPage: chosenIsPage, region }
-}
-
-/** Resolves a selector in the page (see `page.ts` for the dialects). */
-const resolveSelector = (arg: { selector: string }): Element | null => {
-  function resolve(s: string): Element | null {
-    // `a >> b`: descend into a's shadow root; `a >>> b`: descend into a's
-    // same-origin iframe document.
-    if (s.includes('>>')) {
-      const tokens = s.split(/\s*(>>>|>>)\s*/).filter(Boolean)
-      let root: Document | ShadowRoot | Element = document
-      let el: Element | null = null
-      let hop = ''
-      for (const t of tokens) {
-        if (t === '>>' || t === '>>>') {
-          hop = t
-          continue
-        }
-        if (el) {
-          if (hop === '>>>') {
-            let doc: Document | null = null
-            try {
-              doc = (el as HTMLIFrameElement).contentDocument
-            } catch {
-              doc = null // cross-origin
-            }
-            if (!doc) return null
-            root = doc
-          } else {
-            root = (el as Element).shadowRoot || (el as Element)
-          }
-        }
-        el = (root as ParentNode).querySelector(t)
-        if (!el) return null
-      }
-      return el
-    }
-    if (s.indexOf('xpath=') === 0 || s[0] === '/' || s[0] === '(') {
-      const expr = s.indexOf('xpath=') === 0 ? s.slice(6) : s
-      try {
-        return document.evaluate(expr, document, null, 9, null).singleNodeValue as Element | null
-      } catch {
-        return null
-      }
-    }
-    const direct = document.querySelector(s)
-    if (direct) return direct
-    const stack: Array<Document | ShadowRoot> = [document]
-    while (stack.length) {
-      const root = stack.pop() as Document | ShadowRoot
-      const found = root.querySelector(s)
-      if (found) return found
-      root.querySelectorAll('*').forEach((e) => {
-        if ((e as Element).shadowRoot) stack.push((e as Element).shadowRoot as ShadowRoot)
-      })
-    }
-    return null
+  return {
+    inView,
+    deltaY: chosenDelta,
+    hoverX,
+    hoverY,
+    isPage: chosenIsPage,
+    region,
+    box: { x: elRect.x, y: elRect.y, width: elRect.width, height: elRect.height },
+    borders: [parseInt(elStyle.borderLeftWidth, 10), parseInt(elStyle.borderTopWidth, 10)],
   }
-  return resolve(arg.selector)
 }
-
-/**
- * SCROLL_PLAN_JS for the element a selector resolves to. Composed here in
- * Node, not in the page, so the page needs no `eval` under a strict CSP.
- */
-export const SCROLL_PLAN_FOR_SELECTOR = new Function(
-  'arg',
-  `const el = (${resolveSelector})(arg); return el ? (${SCROLL_PLAN_JS})(el, arg) : null`,
-) as (arg: ScrollPlanArgs & { selector: string }) => ScrollPlan | null

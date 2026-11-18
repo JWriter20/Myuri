@@ -5,6 +5,7 @@ input and run JS in the page). The simulation core (trajectories, scroll model,
 Markov typing, seeded RNG) is pure and shared with the TypeScript package.
 """
 import importlib.metadata as _metadata
+from .actions import LANDING_MS, PARTS, RETRY_MS, SCROLL_PASSES, Actions, Host, Missed, run_async, run_sync, validate_steps
 from .cursor import Cursor, create_cursor
 from .drivers import (
     CdpDriver,
@@ -26,11 +27,16 @@ from .options import (
     TypeOptions,
 )
 from .target_os import primary_modifier
-from .plan import (
+from .page_functions import (
+    HIT_TEST_JS,
+    RESOLVE_SELECTOR_JS,
     SCROLL_EDGE,
     SCROLL_FINISH_POSITION,
     SCROLL_PAD,
     SCROLL_PLAN_JS,
+    on_selector,
+)
+from .plan import (
     KeyStep,
     WheelStep,
     plan_click,
@@ -40,6 +46,7 @@ from .plan import (
     plan_select_all,
     plan_type,
     plan_wheel,
+    wheel_steps,
 )
 from .profile import profile_from_seed
 from .rng import SeededRng, gaussian, generate_random_seed, make_rng
@@ -55,6 +62,16 @@ except _metadata.PackageNotFoundError:  # running from a source checkout
 __all__ = [
     "Cursor",
     "create_cursor",
+    "Actions",
+    "Host",
+    "Missed",
+    "LANDING_MS",
+    "PARTS",
+    "RETRY_MS",
+    "SCROLL_PASSES",
+    "run_async",
+    "run_sync",
+    "validate_steps",
     "Driver",
     "PlaywrightDriver",
     "CdpDriver",
@@ -87,10 +104,14 @@ __all__ = [
     "plan_press",
     "plan_select_all",
     "plan_wheel",
+    "wheel_steps",
     "PlannedPoint",
     "KeyStep",
     "WheelStep",
     "SCROLL_PLAN_JS",
+    "HIT_TEST_JS",
+    "RESOLVE_SELECTOR_JS",
+    "on_selector",
     "SCROLL_FINISH_POSITION",
     "SCROLL_PAD",
     "SCROLL_EDGE",

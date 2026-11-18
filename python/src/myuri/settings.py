@@ -32,17 +32,6 @@ class OvershootSettings:
 
 
 @dataclass
-class CorrectionSettings:
-    """Retry and dynamic-adjustment behavior when the cursor misses a target."""
-
-    retry_spread: float = 5
-    retry_move_speed_factor: float = 1
-    dynamic_adjustment_shift_threshold: float = 5
-    dynamic_adjustment_speed_factor: float = 1
-    dynamic_adjustment_noise_scale: float = 0.5
-
-
-@dataclass
 class ScrollRealism:
     """Human-like irregularities applied to scrolling."""
 
@@ -94,7 +83,6 @@ class MyuriSettings:
     """Top-level behavioral settings for a Cursor instance."""
 
     overshoot: OvershootSettings = field(default_factory=OvershootSettings)
-    correction: CorrectionSettings = field(default_factory=CorrectionSettings)
     scroll: ScrollSettings = field(default_factory=ScrollSettings)
     typing: TypingSettings = field(default_factory=TypingSettings)
 

@@ -25,7 +25,6 @@ from .motion.wheel_model import generate_wheel_path
 from .options import PathOptions
 from .target_os import check_os, primary_modifier
 from .rng import Rng, gaussian
-from .scroll_plan import SCROLL_EDGE, SCROLL_FINISH_POSITION, SCROLL_PAD, SCROLL_PLAN_JS
 from .settings import OvershootSettings, WheelSettings, resolve_settings
 from .types import BoundingBox, Vector, overshoot as overshoot_point, point_in_box
 from .typing_engine.config import DEFAULT_WPM
@@ -273,6 +272,11 @@ def plan_wheel(
     s = resolve_settings(settings)
     s.scroll.wheel.style = wheel_style_for(os, settings)
     spec = WheelSpec(device or s.scroll.device, s.scroll.wheel, s.scroll.realism.speed_irregularity)
+    return wheel_steps(delta_x, delta_y, rng, os=os, spec=spec)
+
+
+def wheel_steps(delta_x: float, delta_y: float, rng: Rng, *, os: Optional[str], spec: WheelSpec) -> List[WheelStep]:
+    """:func:`plan_wheel` with the wheel resolved."""
     out: List[WheelStep] = []
     t = 0.0
     if delta_y != 0:
@@ -300,8 +304,4 @@ __all__ = [
     "plan_press",
     "plan_select_all",
     "plan_wheel",
-    "SCROLL_PLAN_JS",
-    "SCROLL_FINISH_POSITION",
-    "SCROLL_PAD",
-    "SCROLL_EDGE",
 ]

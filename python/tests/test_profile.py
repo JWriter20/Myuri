@@ -2,7 +2,6 @@
 import dataclasses
 
 from myuri.profile import profile_from_seed
-from myuri.settings import default_settings
 
 
 def _flat(settings):
@@ -32,11 +31,6 @@ def test_fields_in_range():
         assert 60 <= p.overshoot.radius <= 200
         assert 300 <= p.overshoot.threshold <= 800
         assert p.overshoot.dwell.max_ms > p.overshoot.dwell.min_ms
-
-
-def test_untouched_fields_are_defaults():
-    p = profile_from_seed(1)
-    assert _flat(p.correction) == _flat(default_settings().correction)
 
 
 # Reference values captured from the built TypeScript package (`generateProfile`).
