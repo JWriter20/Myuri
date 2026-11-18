@@ -1,4 +1,4 @@
-import { type Vector } from './math.js'
+import { type Vector, pointInBox } from './math.js'
 import { type Rng, makeRng, generateRandomSeed } from './rng.js'
 import { type Driver, type MouseButton, type ResolvedDriver, defineDriver } from './drivers/types.js'
 import { driverFromPage } from './drivers/index.js'
@@ -20,7 +20,7 @@ import {
 } from './geometry.js'
 import { SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_FOR_SELECTOR, type ScrollPlan } from './scroll-plan.js'
 import { dragCarrySpeed, dragEndMs, dragStartMs, preClickDwellMs } from './motion/click-model.js'
-import { clicksWith, moveWith, wheelStyleFor, wheelWith } from './plan.js'
+import { clicksWith, moveWith, planClick, wheelStyleFor, wheelWith } from './plan.js'
 import { primaryModifier, type Os } from './target-os.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type { BoundingBox } from './math.js'
@@ -38,9 +38,6 @@ const delay = async (ms: number): Promise<void> => {
   if (ms < 1) return
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
-
-const pointInBox = (p: Vector, b: BoundingBox): boolean =>
-  p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
 
 interface FocusedField {
   /** Viewport box in top-page coordinates. */
@@ -214,6 +211,8 @@ export class Cursor {
   private placed = false
   /** `Date.now()` of the last mouse move, for the pause before a press. */
   private lastMoveAt = 0
+  /** `Date.now()` of the last release by `clicks`, for a run of presses in place. */
+  private lastReleaseAt = Number.NEGATIVE_INFINITY
   private isMoving = false
   private performingRandomMoves = false
   private randomMoveTimer: ReturnType<typeof setTimeout> | null = null
@@ -356,16 +355,22 @@ export class Cursor {
 
   /**
    * Clicks `first`..`last` of a multi-click where the cursor is, timed like a
-   * person (`clicksWith` in `plan.ts`): click 1 waits a drawn beat after the
-   * last move, later ones a drawn gap after the release before.
+   * person (`planClick` and `clicksWith` in `plan.ts`): click 1 waits a drawn
+   * beat after the last move, or, with the pointer still where it released,
+   * continues that run; later ones a drawn gap after the release before.
    */
   private async clicks(button: MouseButton, first: number, last: number, holdMs?: number): Promise<void> {
-    const { leadMs, presses } = clicksWith(this.rng, first, last)
-    await delay(first === 1 ? this.lastMoveAt + leadMs - Date.now() : leadMs)
+    const resting = this.lastMoveAt < this.lastReleaseAt
+    const { dwellMs, presses } =
+      first === 1
+        ? planClick(this.rng, { clickCount: last, sinceReleaseMs: resting ? Date.now() - this.lastReleaseAt : undefined })
+        : (({ leadMs, presses }) => ({ dwellMs: leadMs, presses }))(clicksWith(this.rng, first, last))
+    await delay(first === 1 && !resting ? this.lastMoveAt + dwellMs - Date.now() : dwellMs)
     for (let i = 0; i < presses.length; i++) {
       if (i > 0) await delay(presses[i][0] - presses[i - 1][1])
       await this.driver.click(button, first + i, holdMs ?? presses[i][1] - presses[i][0])
     }
+    this.lastReleaseAt = Date.now()
   }
 
   private async moveAlong(destination: Vector, options: MoveToOptions, allowOvershoot: boolean): Promise<void> {
@@ -496,6 +501,15 @@ export class Cursor {
       }
 
       const excludeBoxes = await this.resolveExcludeBoxes(opts.excludeSelectors)
+      // A person already on the target presses where they are.
+      if (
+        this.placed &&
+        pointInBox(this.previous, plan.region) &&
+        !excludeBoxes.some((b) => pointInBox(this.previous, b)) &&
+        (await pointHitsTarget(this.driver, this.previous, selector))
+      ) {
+        return
+      }
       // Widen the retry sample slightly each attempt to escape a repeated miss.
       const attemptOpts = attempt === 0 ? opts : { ...opts, widthPaddingPercentage: Math.max(0, (opts.widthPaddingPercentage ?? 25) - this.settings.correction.retrySpread * attempt) }
       // Sample from the on-screen clip of the target, so a partially covered

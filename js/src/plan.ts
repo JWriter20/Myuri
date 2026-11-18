@@ -13,7 +13,7 @@
  * other planners only check it.
  */
 
-import { type Vector, type BoundingBox, overshoot as overshootPoint } from './math.js'
+import { type Vector, type BoundingBox, overshoot as overshootPoint, pointInBox } from './math.js'
 import { type Rng, gaussian } from './rng.js'
 import { resolveSettings, type DeepPartial, type MyuriSettings } from './settings.js'
 import { checkOs, primaryModifier, type Os } from './target-os.js'
@@ -82,17 +82,18 @@ export function planMove(start: Vector, end: Vector, rng: Rng, options: PlanMove
  * Where in `box` a person clicks: centre-biased, inside the box's middle
  * (half the width of a small target, three quarters of a large one, 30% of
  * the height), and with `start`, nearer to where the pointer comes from.
- * Integer pixels.
+ * Integer pixels. A pointer already on the box presses where it is: `start`.
  */
 export function planPoint(box: BoundingBox, rng: Rng, options: { start?: Vector } = {}): Vector {
+  if (options.start && pointInBox(options.start, box)) return options.start
   return getRandomBoxPoint(box, undefined, options.start, undefined, rng)
 }
 
 // ---- clicks ---------------------------------------------------------------
 
-/** A planned click: the pause after the last move, then each press. */
+/** A planned click: the pause before the first press, then each press. */
 export interface ClickPlan {
-  /** Last move -> first press. */
+  /** Last move -> first press; with `sinceReleaseMs`, now -> first press. */
   dwellMs: number
   /** [down, up] ms of each press, from the first press's down (0). */
   presses: [downAt: number, upAt: number][]
@@ -113,18 +114,45 @@ export function clicksWith(rng: Rng, first: number, last: number): { leadMs: num
       if (count === first) leadMs = gap
       else at += gap
     }
-    const up = at + clickHoldMs(rng)
+    const up = at + clickHoldMs(rng, count > 1)
     presses.push([at, up])
     at = up
   }
   return { leadMs, presses }
 }
 
+/**
+ * The OS counts a press within this long of the last one, in place, into the
+ * same run (Windows' and macOS's double-click time).
+ */
+export const CLICK_RUN_MS = 500
+
+/** Options for {@link planClick}. */
+export interface PlanClickOptions {
+  os?: Os
+  /** 2 for a double click, 3 for a triple click. */
+  clickCount?: number
+  /**
+   * When the pointer has not moved since the last press was released, how
+   * long ago that was. Within {@link CLICK_RUN_MS} the click continues that
+   * run, as rapid clicks in place do: it comes a run's gap after the release
+   * and its presses are held as a run's later ones. Past it, the hand is
+   * already resting on the target and presses at once.
+   */
+  sinceReleaseMs?: number
+}
+
 /** A click, double click (`clickCount` 2) or triple click (3). */
-export function planClick(rng: Rng, options: { os?: Os; clickCount?: number } = {}): ClickPlan {
+export function planClick(rng: Rng, options: PlanClickOptions = {}): ClickPlan {
   checkOs(options.os)
-  const { leadMs, presses } = clicksWith(rng, 1, options.clickCount ?? 1)
-  return { dwellMs: leadMs, presses }
+  const count = options.clickCount ?? 1
+  const since = options.sinceReleaseMs
+  if (since != null && since < CLICK_RUN_MS) {
+    const { leadMs, presses } = clicksWith(rng, 2, count + 1)
+    return { dwellMs: Math.max(0, leadMs - since), presses }
+  }
+  const { leadMs, presses } = clicksWith(rng, 1, count)
+  return { dwellMs: since == null ? leadMs : 0, presses }
 }
 
 // ---- keys -----------------------------------------------------------------

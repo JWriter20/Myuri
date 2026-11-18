@@ -46,6 +46,10 @@ FLICK_SD = 0.18
 FLICK_REGRIP_MU = 4.258
 FLICK_REGRIP_SD = 0.446
 FRAME_MS = 1000 / 60
+NOTCH_MAX_MS = 2 * FRAME_MS
+NUDGE_MAX_NOTCHES = 7
+NUDGE_MU = math.log(2)
+NUDGE_SD = 0.54
 
 MAC_FRAME_MS = 20
 MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -53,6 +57,8 @@ MAC_PEAK_MEAN = 10
 MAC_PEAK_SD = 1.6
 MAC_PEAK_MIN = 6
 MAC_PEAK_MAX = 13
+MAC_CARRY_MS = 150
+MAC_CARRY_DROP_PROBABILITY = 0.45
 
 
 def _js_round(x: float) -> int:
@@ -77,9 +83,14 @@ def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEven
     # Each event's [frame, notch count]; the notches of one frame are one event.
     frames: List[List[int]] = []
     start = 0.0
+    nudged = left <= NUDGE_MAX_NOTCHES
     while left > 0:
-        n = min(left, max(1, _js_round(_lognormal(rng, NOTCHES_MU, NOTCHES_SD))))
-        duration = _clamp(_lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+        if nudged:
+            size = _lognormal(rng, NUDGE_MU, NUDGE_SD) if frames else 1
+        else:
+            size = _lognormal(rng, NOTCHES_MU, NOTCHES_SD)
+        n = min(left, max(1, _js_round(size)))
+        duration = min(n * NOTCH_MAX_MS, _clamp(_lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
         regrip = _clamp(_lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
         last = start
         for i in range(n):
@@ -103,14 +114,16 @@ def _mac_path(target: float, rng: Rng, px_per_line: int) -> List[ScrollEvent]:
     sign = _sign(target)
     left = max(1, _js_round(abs(target) / px_per_line))
     events: List[ScrollEvent] = []
+    lines = 0
     while left > 0:
         if rng() < LONE_NOTCH_PROBABILITY:
             frames = 1
         else:
             duration = _clamp(_lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
             frames = max(2, _js_round(duration / MAC_FRAME_MS))
-        peak = _js_round(_clamp(gaussian(rng, MAC_PEAK_MEAN, MAC_PEAK_SD), MAC_PEAK_MIN, MAC_PEAK_MAX))
-        lines = 1
+        # A stroke after a short re-grip goes on at the speed macOS kept.
+        lines = max(1, lines - (1 if rng() < MAC_CARRY_DROP_PROBABILITY else 0)) if lines > 0 else 1
+        peak = max(lines, _js_round(_clamp(gaussian(rng, MAC_PEAK_MEAN, MAC_PEAK_SD), MAC_PEAK_MIN, MAC_PEAK_MAX)))
         f = 0
         while f < frames and left > 0:
             if f > 0:
@@ -123,7 +136,10 @@ def _mac_path(target: float, rng: Rng, px_per_line: int) -> List[ScrollEvent]:
                 gap = _clamp(_lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
             else:
                 gap = 2 * MAC_FRAME_MS if rng() < MAC_DROPPED_FRAME_PROBABILITY else MAC_FRAME_MS
-            events.append(ScrollEvent(delta_time=_js_round(gap), delta_y=sign * sent * px_per_line))
+            gap = _js_round(gap)
+            events.append(ScrollEvent(delta_time=gap, delta_y=sign * sent * px_per_line))
+            if last and gap > MAC_CARRY_MS:
+                lines = 0
             f += 1
     return events
 

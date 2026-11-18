@@ -31,7 +31,12 @@ import type { ScrollEvent } from './scroll-model.js'
  *  - the flick is fastest at the start and slows evenly to the end: notch i of
  *    n clicks at 1 - sqrt(1 - (i + 0.5) / n) of the stroke. In 60 Hz frames
  *    this gives 48/33/14/4% of events 1/2/3/4 notches and 6/8/10 events a
- *    stroke (recorded 41/41/14/4%, 7/9/11), front-loaded as recorded.
+ *    stroke (recorded 41/41/14/4%, 7/9/11), front-loaded as recorded;
+ *  - a short stroke takes at most two frames a notch: recorded strokes of 2-10
+ *    notches arrive about one notch a 15.6 ms tick;
+ *  - a scroll of up to 7 notches is nudged, not flicked: all 9 recorded opened
+ *    with a lone notch, then strokes of 1-5 notches (median 2), re-gripping
+ *    between them.
  *
  * `macos` is fitted from a notched USB mouse on macOS, Firefox, 1666 wheel
  * events:
@@ -40,7 +45,10 @@ import type { ScrollEvent } from './scroll-model.js'
  *  - a third of strokes are a lone notch;
  *  - macOS frames are 20 ms, ~10% 40 ms (a dropped frame); a stroke starts at
  *    1 line, rises 1-3 lines a frame (sometimes 5) to a peak of 6-13 lines
- *    (median 10) and holds it to the end.
+ *    (median 10) and holds it to the end;
+ *  - macOS keeps the speed across a re-grip of up to 140 ms: the next stroke
+ *    starts at the last frame's lines (55%) or one fewer (45%), in 81% of 83
+ *    such re-grips; after 160 ms or more it always starts again at 1 line.
  */
 
 export type WheelStyle = 'notched' | 'macos'
@@ -70,6 +78,10 @@ const FLICK_SD = 0.18
 const FLICK_REGRIP_MU = 4.258
 const FLICK_REGRIP_SD = 0.446
 const FRAME_MS = 1000 / 60
+const NOTCH_MAX_MS = 2 * FRAME_MS
+const NUDGE_MAX_NOTCHES = 7
+const NUDGE_MU = Math.log(2)
+const NUDGE_SD = 0.54
 
 const MAC_FRAME_MS = 20
 const MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -77,6 +89,8 @@ const MAC_PEAK_MEAN = 10
 const MAC_PEAK_SD = 1.6
 const MAC_PEAK_MIN = 6
 const MAC_PEAK_MAX = 13
+const MAC_CARRY_MS = 150
+const MAC_CARRY_DROP_PROBABILITY = 0.45
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, x))
@@ -92,9 +106,13 @@ function notchedPath(target: number, rng: Rng, pxPerNotch: number): ScrollEvent[
   // Each event's frame and notch count; the notches of one frame are one event.
   const frames: { frame: number; notches: number }[] = []
   let start = 0
+  const nudged = left <= NUDGE_MAX_NOTCHES
   while (left > 0) {
-    const n = Math.min(left, Math.max(1, Math.round(lognormal(rng, NOTCHES_MU, NOTCHES_SD))))
-    const duration = clamp(lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS)
+    const size = nudged
+      ? frames.length === 0 ? 1 : lognormal(rng, NUDGE_MU, NUDGE_SD)
+      : lognormal(rng, NOTCHES_MU, NOTCHES_SD)
+    const n = Math.min(left, Math.max(1, Math.round(size)))
+    const duration = Math.min(n * NOTCH_MAX_MS, clamp(lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
     const regrip = clamp(lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
     let last = start
     for (let i = 0; i < n; i++) {
@@ -115,6 +133,7 @@ function macPath(target: number, rng: Rng, pxPerLine: number): ScrollEvent[] {
   const sign = Math.sign(target)
   let left = Math.max(1, Math.round(Math.abs(target) / pxPerLine))
   const events: ScrollEvent[] = []
+  let lines = 0
   while (left > 0) {
     let frames: number
     if (rng() < LONE_NOTCH_PROBABILITY) {
@@ -123,8 +142,9 @@ function macPath(target: number, rng: Rng, pxPerLine: number): ScrollEvent[] {
       const duration = clamp(lognormal(rng, STROKE_MU, STROKE_SD), STROKE_MIN_MS, STROKE_MAX_MS)
       frames = Math.max(2, Math.round(duration / MAC_FRAME_MS))
     }
-    const peak = Math.round(clamp(gaussian(rng, MAC_PEAK_MEAN, MAC_PEAK_SD), MAC_PEAK_MIN, MAC_PEAK_MAX))
-    let lines = 1
+    // A stroke after a short re-grip goes on at the speed macOS kept.
+    lines = lines > 0 ? Math.max(1, lines - (rng() < MAC_CARRY_DROP_PROBABILITY ? 1 : 0)) : 1
+    const peak = Math.max(lines, Math.round(clamp(gaussian(rng, MAC_PEAK_MEAN, MAC_PEAK_SD), MAC_PEAK_MIN, MAC_PEAK_MAX)))
     for (let f = 0; f < frames && left > 0; f++) {
       if (f > 0) {
         const step = rng() < 0.2 ? 5 : 1 + Math.floor(rng() * 3)
@@ -133,10 +153,13 @@ function macPath(target: number, rng: Rng, pxPerLine: number): ScrollEvent[] {
       const sent = Math.min(lines, left)
       left -= sent
       const last = f + 1 === frames || left === 0
-      const gap = last
-        ? clamp(lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
-        : rng() < MAC_DROPPED_FRAME_PROBABILITY ? 2 * MAC_FRAME_MS : MAC_FRAME_MS
-      events.push({ deltaTime: Math.round(gap), deltaY: sign * sent * pxPerLine })
+      const gap = Math.round(
+        last
+          ? clamp(lognormal(rng, REGRIP_MU, REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+          : rng() < MAC_DROPPED_FRAME_PROBABILITY ? 2 * MAC_FRAME_MS : MAC_FRAME_MS,
+      )
+      events.push({ deltaTime: gap, deltaY: sign * sent * pxPerLine })
+      if (last && gap > MAC_CARRY_MS) lines = 0
     }
   }
   return events

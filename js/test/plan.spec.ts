@@ -45,16 +45,16 @@ const OSES: Array<Os | undefined> = [undefined, 'macos', 'windows', 'linux']
 const GOLDEN = {
   move: [106, 68640.738, 36725.706, 58499.625],
   moveShort: [11, 501.518, 372.564, 669.904],
-  click: { dwellMs: 600, presses: [[0, 92], [162, 257], [334, 447]] },
+  click: { dwellMs: 600, presses: [[0, 92], [162, 246], [323, 425]] },
   // planType('Hi, Bob!'): the release time of each key.
   typeUps: [88.72, 156.757, 157.287, 419.021, 493.384, 932.183, 951.816, 1050.364, 1129.1, 2005.191, 2031.387],
   press: [[0, 'down', 'Control'], [74.196, 'down', 'Shift'], [242.174, 'down', 'z'], [265.058, 'up', 'Control'], [308.493, 'up', 'z'], [348.256, 'up', 'Shift']],
   // Per OS in OSES order: the wheel is what the OS changes.
   wheelMouse: [
-    [10, [['down', 366], ['up', 2313.134]], 0, 800, 6139.11],
+    [10, [['down', 360], ['up', 8348.707]], 0, 800, 14278.601],
     [11, [['down', 191], ['up', 1895.11]], 304, 496, 5965.91],
-    [10, [['down', 366], ['up', 2313.134]], 0, 800, 6139.11],
-    [10, [['down', 366], ['up', 2313.134]], 0, 800, 6139.11],
+    [10, [['down', 360], ['up', 8348.707]], 0, 800, 14278.601],
+    [10, [['down', 360], ['up', 8348.707]], 0, 800, 14278.601],
   ],
   wheelPad: [
     [15, [['down', 0], ['up', 2427.008]], 0, -200, 14223.494],
@@ -108,6 +108,42 @@ describe('planners', () => {
     const box = { x: 100, y: 200, width: 120, height: 40 }
     expect(planPoint(box, makeRng(4))).toEqual({ x: 156, y: 224 })
     expect(planPoint(box, makeRng(4), { start: { x: 0, y: 0 } })).toEqual({ x: 128, y: 215 })
+  })
+
+  it('presses where the pointer is when it is already on the box', () => {
+    const box = { x: 100, y: 200, width: 120, height: 40 }
+    expect(planPoint(box, makeRng(4), { start: { x: 101.5, y: 238 } })).toEqual({ x: 101.5, y: 238 })
+  })
+})
+
+describe('click runs', () => {
+  const median = (v: number[]): number => v.sort((a, b) => a - b)[v.length >> 1]
+  const holds = (plans: { presses: [number, number][] }[], i: number) => median(plans.map((p) => p.presses[i][1] - p.presses[i][0]))
+  const seeds = Array.from({ length: 2000 }, (_, i) => makeRng(i + 1))
+
+  // People's presses after the first of a run (a double or triple click, or
+  // rapid clicks in place) are held shorter: median 83 ms against 96.
+  it('holds a later press of a run as people do', () => {
+    const plans = seeds.map((rng) => planClick(rng, { clickCount: 3 }))
+    expect(holds(plans, 0)).toBeGreaterThan(88)
+    expect(holds(plans, 1)).toBeGreaterThanOrEqual(78)
+    expect(holds(plans, 1)).toBeLessThanOrEqual(88)
+    expect(holds(plans, 2)).toBeLessThanOrEqual(88)
+  })
+
+  it('continues a run after a recent release in place', () => {
+    const plans = seeds.map((rng) => planClick(rng, { sinceReleaseMs: 20 }))
+    // The gap from the release is the run's, about 78 ms, of which 20 have passed.
+    expect(median(plans.map((p) => p.dwellMs))).toBeGreaterThanOrEqual(50)
+    expect(median(plans.map((p) => p.dwellMs))).toBeLessThanOrEqual(66)
+    expect(Math.min(...plans.map((p) => p.dwellMs))).toBeGreaterThanOrEqual(0)
+    expect(holds(plans, 0)).toBeLessThanOrEqual(88)
+  })
+
+  it('presses at once after a release past the double-click time', () => {
+    const plans = seeds.map((rng) => planClick(rng, { sinceReleaseMs: 800 }))
+    expect(plans.every((p) => p.dwellMs === 0)).toBe(true)
+    expect(holds(plans, 0)).toBeGreaterThan(88)
   })
 })
 

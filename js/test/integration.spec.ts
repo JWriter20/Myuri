@@ -135,6 +135,31 @@ describe('Cursor (headless integration)', () => {
     expect(firstMoveIdx).toBeLessThan(clickIdx)
   })
 
+  it('clicks the element again where the pointer rests, without a move', async () => {
+    const { driver, calls } = makeFakeDriver()
+    const cursor = createCursor({ driver, seed: 2 })
+    await cursor.click('#target')
+    const first = calls.length
+    await cursor.click('#target')
+    expect(calls.slice(first).map((c) => c.op)).toEqual(['click'])
+  })
+
+  it('continues a run when clicked again in place, as rapid clicks are', async () => {
+    const { driver } = makeFakeDriver()
+    const times: number[] = []
+    const holds: number[] = []
+    const cursor = createCursor({
+      driver: { ...driver, async click(_b, _n, holdMs) { times.push(Date.now()); holds.push(holdMs ?? 0) } },
+      seed: 5,
+    })
+    await cursor.move('#target')
+    for (let i = 0; i < 15; i++) await cursor.click(undefined, { waitForClick: 0 })
+    const med = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]
+    // People's rapid clicks in place: up -> down 71-88 ms, held 63-79 ms.
+    expect(med(times.slice(1).map((t, i) => t - times[i]))).toBeGreaterThan(60)
+    expect(med(holds.slice(1))).toBeLessThan(88)
+  })
+
   it('type clicks the field then presses keys', async () => {
     const { driver, calls } = makeFakeDriver()
     const cursor = createCursor({ driver, seed: 3, settings: { typing: { mistakeMultiplier: 0 } } })

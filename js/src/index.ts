@@ -58,6 +58,7 @@ export {
   type PlannedPoint,
   type PlanMoveOptions,
   type ClickPlan,
+  type PlanClickOptions,
   type KeyStep,
   type PlanTypeOptions,
   type WheelStep,

@@ -34,24 +34,47 @@ describe('mouse wheel model', () => {
     expect(median(regrips)).toBeLessThan(100)
   })
 
-  it('macos: 16 px lines in 20 ms frames, ramping from one line', () => {
-    let firsts = 0
-    let strokes = 0
+  it('notched: a scroll of a few notches is nudged, a lone notch first', () => {
+    const gaps: number[] = []
+    for (let seed = 0; seed < 200; seed++) {
+      const ev = generateWheelPath(500, makeRng(seed))
+      // Recorded short scrolls all open with one notch, then a re-grip.
+      expect(ev[0].deltaY).toBe(100)
+      expect(ev[0].deltaTime).toBeGreaterThanOrEqual(45)
+      gaps.push(...ev.slice(0, -1).map((e) => e.deltaTime))
+    }
+    // Recorded bursts of 4-6 notches: event gaps p10/50/90 16/47/78 ms.
+    const sorted = [...gaps].sort((a, b) => a - b)
+    expect(sorted[Math.floor(sorted.length / 10)]).toBeLessThanOrEqual(17)
+    expect(median(gaps)).toBeGreaterThan(40)
+    expect(median(gaps)).toBeLessThan(75)
+  })
+
+  it('macos: 16 px lines in 20 ms frames; a re-grip within 150 ms keeps the speed', () => {
+    let carried = 0
+    let restarted = 0
     for (let seed = 0; seed < 30; seed++) {
-      const ev = generateWheelPath(-2000, makeRng(seed), { style: 'macos' })
-      expect(ev.reduce((s, e) => s + e.deltaY, 0)).toBe(-125 * 16)
-      let startOfStroke = true
-      for (const e of ev) {
-        expect(Math.abs(e.deltaY % 16)).toBe(0)
-        expect(Math.abs(e.deltaY)).toBeLessThanOrEqual(13 * 16)
-        if (startOfStroke) {
-          strokes++
-          if (e.deltaY === -16) firsts++
+      const ev = generateWheelPath(-4000, makeRng(seed), { style: 'macos' })
+      expect(ev.reduce((s, e) => s + e.deltaY, 0)).toBe(-250 * 16)
+      expect(ev[0].deltaY).toBe(-16)
+      for (let i = 0; i + 1 < ev.length; i++) {
+        expect(Math.abs(ev[i].deltaY % 16)).toBe(0)
+        expect(Math.abs(ev[i].deltaY)).toBeLessThanOrEqual(13 * 16)
+        if (ev[i].deltaTime === 20 || ev[i].deltaTime === 40) continue
+        // Recorded on macOS: after <= 140 ms the next stroke starts at the last
+        // frame's lines or one fewer; after 160+ ms, at one line.
+        if (ev[i].deltaTime <= 150) {
+          carried++
+          // The scroll's last event sends only what is left.
+          if (i + 2 < ev.length) expect(Math.abs(ev[i + 1].deltaY)).toBeGreaterThanOrEqual(Math.abs(ev[i].deltaY) - 16)
+        } else {
+          restarted++
+          expect(ev[i + 1].deltaY).toBe(-16)
         }
-        startOfStroke = e.deltaTime !== 20 && e.deltaTime !== 40
       }
     }
-    expect(firsts).toBe(strokes)
+    expect(carried).toBeGreaterThan(0)
+    expect(restarted).toBeGreaterThan(0)
   })
 
   it('is deterministic per seed', () => {

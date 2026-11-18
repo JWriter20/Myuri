@@ -5,7 +5,9 @@ draw order is identical, so a seed gives the same clicks in both languages).
 Fitted from a recording of a person clicking in Firefox with a notched USB
 mouse, all lognormal in milliseconds: hold mu 4.533 sd 0.21 (median 93); last
 move -> press mu 3.717 sd 1.341 (median 41); double/triple click up -> next
-down mu 4.353 sd 0.113 (median 78). See the TypeScript module for the fit and
+down mu 4.353 sd 0.113 (median 78). A later press of a run (a double or triple
+click, or rapid clicks in place) is held shorter: mu 4.419 sd 0.227 (median
+83). See the TypeScript module for the fit and
 the drag figures.
 """
 from __future__ import annotations
@@ -18,6 +20,7 @@ from ..rng import gaussian
 Rng = Callable[[], float]
 
 _HOLD = (4.533, 0.21, 35, 400)
+_LATER_HOLD = (4.419, 0.227, 35, 400)
 _DWELL = (3.717, 1.341, 4, 600)
 _MULTI_GAP = (4.353, 0.113, 30, 250)
 _DRAG_START = (3.58, 1.004, 4, 500)
@@ -33,9 +36,9 @@ def _lognormal(rng: Rng, params) -> int:
     return _js_round(max(lo, min(hi, math.exp(gaussian(rng, mu, sd)))))
 
 
-def click_hold_ms(rng: Rng) -> int:
-    """Milliseconds a mouse button is held down."""
-    return _lognormal(rng, _HOLD)
+def click_hold_ms(rng: Rng, later: bool = False) -> int:
+    """Milliseconds a mouse button is held down; ``later`` for a press after the first of a run."""
+    return _lognormal(rng, _LATER_HOLD if later else _HOLD)
 
 
 def pre_click_dwell_ms(rng: Rng) -> int:

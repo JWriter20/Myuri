@@ -51,16 +51,16 @@ OSES = [None, "macos", "windows", "linux"]
 GOLDEN = {
     "move": [106, 68640.738, 36725.706, 58499.625],
     "move_short": [11, 501.518, 372.564, 669.904],
-    "click": {"dwell_ms": 600, "presses": [(0, 92), (162, 257), (334, 447)]},
+    "click": {"dwell_ms": 600, "presses": [(0, 92), (162, 246), (323, 425)]},
     # plan_type('Hi, Bob!'): the release time of each key.
     "type_ups": [88.72, 156.757, 157.287, 419.021, 493.384, 932.183, 951.816, 1050.364, 1129.1, 2005.191, 2031.387],
     "press": [[0, "down", "Control"], [74.196, "down", "Shift"], [242.174, "down", "z"], [265.058, "up", "Control"], [308.493, "up", "z"], [348.256, "up", "Shift"]],
     # Per OS in OSES order: the wheel is what the OS changes.
     "wheel_mouse": [
-        [10, [["down", 366], ["up", 2313.134]], 0, 800, 6139.11],
+        [10, [["down", 360], ["up", 8348.707]], 0, 800, 14278.601],
         [11, [["down", 191], ["up", 1895.11]], 304, 496, 5965.91],
-        [10, [["down", 366], ["up", 2313.134]], 0, 800, 6139.11],
-        [10, [["down", 366], ["up", 2313.134]], 0, 800, 6139.11],
+        [10, [["down", 360], ["up", 8348.707]], 0, 800, 14278.601],
+        [10, [["down", 360], ["up", 8348.707]], 0, 800, 14278.601],
     ],
     "wheel_pad": [
         [15, [["down", 0], ["up", 2427.008]], 0, -200, 14223.494],
@@ -102,6 +102,40 @@ def test_picks_a_point_in_a_box():
     box = BoundingBox(100, 200, 120, 40)
     assert plan_point(box, make_rng(4)) == Vector(156, 224)
     assert plan_point(box, make_rng(4), start=Vector(0, 0)) == Vector(128, 215)
+
+
+def test_presses_where_the_pointer_is_when_it_is_already_on_the_box():
+    assert plan_point(BoundingBox(100, 200, 120, 40), make_rng(4), start=Vector(101.5, 238)) == Vector(101.5, 238)
+
+
+def _median(xs):
+    return sorted(xs)[len(xs) // 2]
+
+
+def _plans(**kw):
+    rng = make_rng(1)
+    return [plan_click(rng, **kw) for _ in range(2000)]
+
+
+def test_holds_a_later_press_of_a_run_as_people_do():
+    holds = [[up - down for down, up in p["presses"]] for p in _plans(click_count=3)]
+    # People: a first press held 96 ms (median), a later one in a run 83.
+    assert _median([h[0] for h in holds]) > 88
+    assert 78 <= _median([h[1] for h in holds]) <= 88
+    assert _median([h[2] for h in holds]) <= 88
+
+
+def test_continues_a_run_after_a_recent_release_in_place():
+    plans = _plans(since_release_ms=20)
+    assert 50 <= _median([p["dwell_ms"] for p in plans]) <= 66
+    assert min(p["dwell_ms"] for p in plans) >= 0
+    assert _median([p["presses"][0][1] - p["presses"][0][0] for p in plans]) <= 88
+
+
+def test_presses_at_once_after_a_release_past_the_double_click_time():
+    plans = _plans(since_release_ms=800)
+    assert all(p["dwell_ms"] == 0 for p in plans)
+    assert _median([p["presses"][0][1] - p["presses"][0][0] for p in plans]) > 88
 
 
 def key_driver(downs):

@@ -16,6 +16,10 @@ import { gaussian } from '../rng.js'
  * drag:
  *  - hold (pointerdown -> pointerup), 110 clicks: mu 4.533, sd 0.21, median
  *    93 ms (p10 68, p90 115);
+ *  - hold of a later press of a run (a double or triple click, or rapid
+ *    clicks in place: pressed within 500 ms and 4 px of the last release),
+ *    130 presses on both OSes with a mouse and a pad: mu 4.419, sd 0.227,
+ *    median 83 ms (p10 63, p90 113), against 96 for the first press;
  *  - last pointermove -> pointerdown, 89 clicks: mu 3.717, sd 1.341, median
  *    41 ms (p10 6, p90 259). The cursor often stops, then presses a beat later;
  *  - double/triple click, pointerup -> next pointerdown, 11 gaps: mu 4.353,
@@ -30,6 +34,8 @@ const HOLD_MU = 4.533
 const HOLD_SD = 0.21
 const HOLD_MIN_MS = 35
 const HOLD_MAX_MS = 400
+const LATER_HOLD_MU = 4.419
+const LATER_HOLD_SD = 0.227
 const DWELL_MU = 3.717
 const DWELL_SD = 1.341
 const DWELL_MIN_MS = 4
@@ -53,9 +59,11 @@ function lognormal(rng: Rng, mu: number, sd: number, lo: number, hi: number): nu
   return Math.round(Math.max(lo, Math.min(hi, Math.exp(gaussian(rng, mu, sd)))))
 }
 
-/** Milliseconds a mouse button is held down. */
-export function clickHoldMs(rng: Rng): number {
-  return lognormal(rng, HOLD_MU, HOLD_SD, HOLD_MIN_MS, HOLD_MAX_MS)
+/** Milliseconds a mouse button is held down; `later` for a press after the first of a run. */
+export function clickHoldMs(rng: Rng, later = false): number {
+  return later
+    ? lognormal(rng, LATER_HOLD_MU, LATER_HOLD_SD, HOLD_MIN_MS, HOLD_MAX_MS)
+    : lognormal(rng, HOLD_MU, HOLD_SD, HOLD_MIN_MS, HOLD_MAX_MS)
 }
 
 /** Milliseconds from the last mouse move to the press. */
