@@ -27,7 +27,7 @@ from .target_os import check_os, primary_modifier
 from .rng import Rng, gaussian
 from .scroll_plan import SCROLL_EDGE, SCROLL_FINISH_POSITION, SCROLL_PAD, SCROLL_PLAN_JS
 from .settings import OvershootSettings, WheelSettings, resolve_settings
-from .types import BoundingBox, Vector, overshoot as overshoot_point
+from .types import BoundingBox, Vector, overshoot as overshoot_point, point_in_box
 from .typing_engine.config import DEFAULT_WPM
 from .typing_engine.timing import KeyAction, KeystrokeTiming, needs_shift
 from .typing_engine.typer import draw_session_wpm, plan_typing
@@ -85,7 +85,9 @@ def plan_point(box: BoundingBox, rng: Rng, *, start: Optional[Vector] = None) ->
     """Where in ``box`` a person clicks: centre-biased, inside the box's middle
     (half the width of a small target, three quarters of a large one, 30% of
     the height), and with ``start``, nearer to where the pointer comes from.
-    Integer pixels."""
+    Integer pixels. A pointer already on the box presses where it is: ``start``."""
+    if start is not None and point_in_box(start, box):
+        return start
     return get_random_box_point(box, None, start, None, rng)
 
 
@@ -106,19 +108,36 @@ def clicks_with(rng: Rng, first: int, last: int) -> Tuple[float, List[Tuple[floa
                 lead_ms = gap
             else:
                 at += gap
-        up = at + click_hold_ms(rng)
+        up = at + click_hold_ms(rng, count > 1)
         presses.append((at, up))
         at = up
     return lead_ms, presses
 
 
-def plan_click(rng: Rng, *, os: Optional[str] = None, click_count: int = 1) -> Dict[str, Any]:
+CLICK_RUN_MS = 500
+"""The OS counts a press within this long of the last one, in place, into the
+same run (Windows' and macOS's double-click time)."""
+
+
+def plan_click(
+    rng: Rng, *, os: Optional[str] = None, click_count: int = 1, since_release_ms: Optional[float] = None
+) -> Dict[str, Any]:
     """A click, double click (``click_count`` 2) or triple click (3):
     ``{"dwell_ms": last move -> first press, "presses": [(down, up), ...]}``,
-    press times from the first press's down (0)."""
+    press times from the first press's down (0).
+
+    ``since_release_ms``: when the pointer has not moved since the last press
+    was released, how long ago that was. Within :data:`CLICK_RUN_MS` the click
+    continues that run, as rapid clicks in place do: ``dwell_ms`` runs from now
+    to a run's gap after the release, and the presses are held as a run's later
+    ones. Past it, the hand is already resting on the target and presses at
+    once."""
     check_os(os)
+    if since_release_ms is not None and since_release_ms < CLICK_RUN_MS:
+        lead_ms, presses = clicks_with(rng, 2, click_count + 1)
+        return {"dwell_ms": max(0, lead_ms - since_release_ms), "presses": presses}
     lead_ms, presses = clicks_with(rng, 1, click_count)
-    return {"dwell_ms": lead_ms, "presses": presses}
+    return {"dwell_ms": lead_ms if since_release_ms is None else 0, "presses": presses}
 
 
 # ---- keys --------------------------------------------------------------------

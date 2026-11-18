@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 import time
 from dataclasses import replace
 from typing import Any, List, Optional, Union
@@ -27,12 +28,12 @@ from .page import (
     viewport_of,
     wait_for_element,
 )
-from .plan import WheelSpec, clicks_with, move_with, wheel_style_for, wheel_with
+from .plan import WheelSpec, clicks_with, move_with, plan_click, wheel_style_for, wheel_with
 from .profile import profile_from_seed
 from .rng import generate_random_seed, make_rng
 from .scroll_plan import SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_FOR_SELECTOR
 from .settings import resolve_settings
-from .types import BoundingBox, Vector
+from .types import BoundingBox, Vector, point_in_box
 from .typing_engine.typer import HumanTyper
 
 
@@ -40,10 +41,6 @@ async def _delay(ms: float) -> None:
     if ms < 1:
         return
     await asyncio.sleep(ms / 1000.0)
-
-
-def _point_in_box(p: Vector, b: BoundingBox) -> bool:
-    return b.x <= p.x <= b.x + b.width and b.y <= p.y <= b.y + b.height
 
 
 # Page function for clear_existing (mirror of ``focusedField`` in js/src/cursor.ts):
@@ -199,6 +196,8 @@ class Cursor:
         self._placed = False
         # time.monotonic() of the last mouse move, for the pause before a press.
         self._last_move_at = 0.0
+        # time.monotonic() of the last release by _clicks, for a run of presses in place.
+        self._last_release_at = -math.inf
         self._is_moving = False
         self._performing_random_moves = False
         self._random_move_task: Optional[asyncio.Task] = None
@@ -286,14 +285,23 @@ class Cursor:
     # ---- primitive motion ----
     async def _clicks(self, button: str, first: int, last: int, hold_ms: Optional[float] = None) -> None:
         """Clicks ``first``..``last`` of a multi-click where the cursor is,
-        timed like a person (see ``motion/click_model.py``): click 1 waits a
-        drawn beat after the last move, and each button is held a drawn time.
+        timed like a person (``plan_click`` and ``clicks_with`` in ``plan.py``):
+        click 1 waits a drawn beat after the last move, or, with the pointer
+        still where it released, continues that run; each button is held a
+        drawn time.
         Drivers written before ``click_count``/``hold_ms`` get what they take;
         one without ``click_count`` makes plain clicks, so clearing a field
         then reports it as not cleared.
         """
-        lead_ms, presses = clicks_with(self._rng, first, last)
-        await _delay(self._last_move_at * 1000.0 + lead_ms - time.monotonic() * 1000.0 if first == 1 else lead_ms)
+        resting = self._last_move_at < self._last_release_at
+        if first == 1:
+            since = (time.monotonic() - self._last_release_at) * 1000.0 if resting else None
+            planned = plan_click(self._rng, click_count=last, since_release_ms=since)
+            lead_ms, presses = planned["dwell_ms"], planned["presses"]
+            await _delay(lead_ms if resting else self._last_move_at * 1000.0 + lead_ms - time.monotonic() * 1000.0)
+        else:
+            lead_ms, presses = clicks_with(self._rng, first, last)
+            await _delay(lead_ms)
         click = self._driver.click
         for i, (down, up) in enumerate(presses):
             if i > 0:
@@ -305,6 +313,7 @@ class Cursor:
                 await click(button, first + i)
             else:
                 await click(button)
+        self._last_release_at = time.monotonic()
 
     async def _move_along(self, destination: Vector, options, allow_overshoot: bool) -> None:
         vp = await viewport_of(self._driver)
@@ -422,6 +431,14 @@ class Cursor:
                 x=region["x"], y=region["y"], width=region["width"], height=region["height"]
             )
             exclude_boxes = await self._resolve_exclude_boxes(_pick(options, "exclude_selectors", None))
+            # A person already on the target presses where they are.
+            if (
+                self._placed
+                and point_in_box(self._previous, box)
+                and not any(point_in_box(self._previous, b) for b in exclude_boxes)
+                and await point_hits_target(self._driver, self._previous, selector)
+            ):
+                return
             # Widen the retry sample slightly each attempt to escape a repeated miss.
             attempt_opts = options
             if attempt > 0:
@@ -438,7 +455,7 @@ class Cursor:
             destination = get_random_box_point(box, attempt_opts, self._previous, exclude_boxes, self._rng)
             await self._move_along(destination, options, should_overshoot(self._previous, destination, overshoot_threshold))
             final_box = await bounding_box_of(self._driver, selector)
-            if final_box and _point_in_box(self._previous, final_box) and await point_hits_target(self._driver, self._previous, selector):
+            if final_box and point_in_box(self._previous, final_box) and await point_hits_target(self._driver, self._previous, selector):
                 return
             last_error = RuntimeError(f"myuri: cursor did not land on {selector}")
         if last_error:
@@ -531,7 +548,7 @@ class Cursor:
             await self._typer.delete_all(0, self._select_all_modifier)
         else:
             box = BoundingBox(**field["box"])
-            if not _point_in_box(self._previous, box):
+            if not point_in_box(self._previous, box):
                 await self._move_along(get_random_box_point(box, None, self._previous, [], self._rng), None, False)
                 focus_clicked = False
             first_click = 2 if focus_clicked else 1

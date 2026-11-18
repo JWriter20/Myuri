@@ -65,6 +65,11 @@ def magnitude(a: Vector) -> float:
     return math.hypot(a.x, a.y)
 
 
+def point_in_box(p: Vector, b: BoundingBox) -> bool:
+    """Whether ``p`` is inside ``b``, edges included."""
+    return b.x <= p.x <= b.x + b.width and b.y <= p.y <= b.y + b.height
+
+
 def overshoot(coordinate: Vector, radius: float, rng: Callable[[], float]) -> Vector:
     """A point drawn uniformly from a disc of the given radius around ``coordinate``."""
     angle = rng() * 2 * math.pi

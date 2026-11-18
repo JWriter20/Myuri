@@ -25,6 +25,8 @@ export const sub = (a: Vector, b: Vector): Vector => ({ x: a.x - b.x, y: a.y - b
 export const add = (a: Vector, b: Vector): Vector => ({ x: a.x + b.x, y: a.y + b.y })
 export const direction = (a: Vector, b: Vector): Vector => sub(b, a)
 export const magnitude = (a: Vector): number => Math.hypot(a.x, a.y)
+export const pointInBox = (p: Vector, b: BoundingBox): boolean =>
+  p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
 
 /** A point drawn uniformly from a disc of the given radius around `coordinate`. */
 export const overshoot = (coordinate: Vector, radius: number, rng: Rng): Vector => {

@@ -77,6 +77,7 @@ await cursor.click('#username')
 await cursor.type('hello@example.com')
 await cursor.scroll('#footer')
 await cursor.click('#word', { clickCount: 2 })   // double click; holdMs for a long press
+await cursor.click('#word')                     // again in place: no move; within 500 ms it continues the run
 await cursor.drag('#card', '#bin')              // selectors or { x, y } points
 await cursor.dispose()          // detaches CDP sessions, clears timers
 ```
@@ -175,9 +176,11 @@ With `device: 'mouse'`, `scroll.wheel.style` sets how the wheel reports:
 - `notched` (Windows, Linux): notches of `pxPerNotch` (default 100). A stroke flicks about
   17 notches (11 to 22) over about 158 ms, fastest at the start, and the finger re-grips for
   about 70 ms. Notches that land in one 60 Hz display frame arrive as one wheel call of 2 to
-  4 notches, as the page receives them.
+  4 notches, as the page receives them. A scroll of up to 7 notches is nudged instead: a lone
+  notch, then strokes of about 2 notches with a re-grip between them.
 - `macos`: 20 ms frames of `pxPerLine` (default 16) lines. Each stroke starts at one line a
-  frame and accelerates to about 10, as macOS does.
+  frame and accelerates to about 10, as macOS does. After a re-grip of up to 150 ms macOS
+  keeps the speed, so the next stroke starts where the last one left off.
 
 A wheel can't move an exact number of pixels, so mouse scrolls land on the nearest whole notch.
 The cursor calibrates against the distance it actually sent.
@@ -236,8 +239,8 @@ milliseconds from the start of the plan.
 | TypeScript | Python | Returns |
 |---|---|---|
 | `planMove(start, end, rng, { os, moveSpeed, overshoot, settings })` | `plan_move(start, end, rng, *, os, move_speed, overshoot, settings)` | `{ x, y, t }` points, one a mouse report (about 10 ms); the last is exactly `end`. Off macOS, a Cursor skips a report on the pixel it already sent |
-| `planPoint(box, rng, { start })` | `plan_point(box, rng, *, start)` | where in `box` a person clicks |
-| `planClick(rng, { os, clickCount })` | `plan_click(rng, *, os, click_count)` | the dwell before the first press, and each press's down and up |
+| `planPoint(box, rng, { start })` | `plan_point(box, rng, *, start)` | where in `box` a person clicks; `start` itself when it is already in `box` |
+| `planClick(rng, { os, clickCount, sinceReleaseMs })` | `plan_click(rng, *, os, click_count, since_release_ms)` | the dwell before the first press, and each press's down and up. Pass `sinceReleaseMs` when the pointer has not moved since the last release: within 500 ms the click continues that run, as rapid clicks in place do |
 | `planType(text, rng, { os, wpm, mistakeMultiplier })` | `plan_type(text, rng, *, os, wpm, mistake_multiplier)` | `[t, 'down' \| 'up' \| 'insert', key]` steps, typos included |
 | `planPress(key, rng, { os, wpm })` | `plan_press(key, rng, *, os, wpm)` | the steps of a key or chord (`'Control+Shift+z'`) |
 | `planSelectAll(rng, { os })` | `plan_select_all(rng, *, os)` | Cmd+A or Ctrl+A for `os` |

@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from myuri import Cursor, ScrollOptions, TypeOptions
+from myuri import ClickOptions, Cursor, ScrollOptions, TypeOptions
 from myuri.motion.scroll_model import scroll_model
 from myuri.drivers.base import Driver
 
@@ -100,6 +100,39 @@ async def test_click_moves_then_clicks():
     ops = [c[0] for c in d.calls]
     assert "click" in ops
     assert ops.index("move") < ops.index("click")
+
+
+@pytest.mark.asyncio
+async def test_clicks_the_element_again_where_the_pointer_rests_without_a_move():
+    d = FakeDriver()
+    cursor = Cursor(d, seed=2)
+    await cursor.click("#target")
+    first = len(d.calls)
+    await cursor.click("#target")
+    assert [c[0] for c in d.calls[first:]] == ["click"]
+
+
+class TimedDriver(FakeDriver):
+    def __init__(self):
+        super().__init__()
+        self.times, self.holds = [], []
+
+    async def click(self, button="left", click_count=1, hold_ms=None):
+        self.times.append(time.monotonic() * 1000)
+        self.holds.append(hold_ms)
+
+
+@pytest.mark.asyncio
+async def test_continues_a_run_when_clicked_again_in_place():
+    d = TimedDriver()
+    cursor = Cursor(d, seed=5)
+    await cursor.move("#target")
+    for _ in range(15):
+        await cursor.click(None, ClickOptions(wait_for_click=0))
+    gaps = sorted(b - a for a, b in zip(d.times, d.times[1:]))
+    # People's rapid clicks in place: up -> down 71-88 ms, held 63-79 ms.
+    assert gaps[len(gaps) // 2] > 60
+    assert sorted(d.holds[1:])[7] < 88
 
 
 @pytest.mark.asyncio

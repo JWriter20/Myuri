@@ -28,21 +28,44 @@ def test_notched_flicks_in_frames():
     assert 60 < statistics.median(regrips) < 100
 
 
-def test_macos_lines_ramp_from_one():
+def test_notched_short_scroll_is_nudged():
+    gaps = []
+    for seed in range(200):
+        ev = generate_wheel_path(500, make_rng(seed))
+        # Recorded short scrolls all open with one notch, then a re-grip.
+        assert ev[0].delta_y == 100 and ev[0].delta_time >= 45
+        gaps += [e.delta_time for e in ev[:-1]]
+    # Recorded bursts of 4-6 notches: event gaps p10/50/90 16/47/78 ms.
+    assert sorted(gaps)[len(gaps) // 10] <= 17
+    assert 40 < statistics.median(gaps) < 75
+
+
+def test_macos_regrip_keeps_speed():
+    carried = restarted = 0
     for seed in range(30):
-        ev = generate_wheel_path(-2000, make_rng(seed), style="macos")
-        assert sum(e.delta_y for e in ev) == -125 * 16
-        start = True
-        for e in ev:
-            assert e.delta_y % 16 == 0 and abs(e.delta_y) <= 13 * 16
-            if start:
-                assert e.delta_y == -16
-            start = e.delta_time not in (20, 40)
+        ev = generate_wheel_path(-4000, make_rng(seed), style="macos")
+        assert sum(e.delta_y for e in ev) == -250 * 16
+        assert ev[0].delta_y == -16
+        for i in range(len(ev) - 1):
+            assert ev[i].delta_y % 16 == 0 and abs(ev[i].delta_y) <= 13 * 16
+            if ev[i].delta_time in (20, 40):
+                continue
+            # Recorded on macOS: after <= 140 ms the next stroke starts at the
+            # last frame's lines or one fewer; after 160+ ms, at one line.
+            if ev[i].delta_time <= 150:
+                carried += 1
+                # The scroll's last event sends only what is left.
+                if i + 2 < len(ev):
+                    assert abs(ev[i + 1].delta_y) >= abs(ev[i].delta_y) - 16
+            else:
+                restarted += 1
+                assert ev[i + 1].delta_y == -16
+    assert carried and restarted
 
 
 # Cross-language parity: printed by js generateWheelPath(1234, makeRng(42)) and
 # generateWheelPath(-900, makeRng(7), { style: 'macos' }).
-GOLDEN = json.loads('{"notched":[[17,100],[16,300],[17,200],[17,100],[16,200],[17,100],[17,100],[53,100]],"macos":[[88,-16],[20,-16],[20,-96],[20,-112],[20,-144],[20,-160],[20,-160],[20,-160],[423,-32]]}')
+GOLDEN = json.loads('{"notched":[[17,100],[16,300],[17,200],[17,100],[16,200],[17,100],[17,100],[53,100]],"macos":[[88,-16],[20,-16],[20,-48],[20,-64],[20,-112],[20,-128],[20,-160],[40,-160],[20,-160],[229,-32]]}')
 
 
 def test_matches_typescript():
