@@ -68,6 +68,7 @@ export {
   Missed,
   validateSteps,
   PARTS,
+  LANDING_MS,
   RETRY_MS,
   SCROLL_PASSES,
   type Host,

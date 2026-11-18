@@ -104,6 +104,17 @@ def test_click_wheels_into_view_then_moves_onto_it_and_clicks_once():
     assert BOX["y"] <= y <= BOX["y"] + BOX["height"]
 
 
+def test_click_waits_for_the_wheels_scroll_to_land_before_it_aims():
+    landing = [{**IN_VIEW, "region": {**BOX, "y": y}, "box": {**BOX, "y": y}} for y in (700, 550)]
+    host = FakeHost(plans=[BELOW, *landing, IN_VIEW])
+    a = actions(host)
+    a.run(a.click("#t"))
+    assert host.kinds().count("click") == 1
+    _, x, y, _ = [c for c in host.calls if c[0] == "move"][-1]
+    assert BOX["x"] <= x <= BOX["x"] + BOX["width"]
+    assert BOX["y"] <= y <= BOX["y"] + BOX["height"]
+
+
 def test_click_tries_a_miss_again_after_a_wait():
     host = FakeHost(hits=["<div> intercepts pointer events", None])
     a = actions(host)

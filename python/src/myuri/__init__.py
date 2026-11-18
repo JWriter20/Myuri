@@ -5,7 +5,7 @@ input and run JS in the page). The simulation core (trajectories, scroll model,
 Markov typing, seeded RNG) is pure and shared with the TypeScript package.
 """
 import importlib.metadata as _metadata
-from .actions import PARTS, RETRY_MS, SCROLL_PASSES, Actions, Host, Missed, run_async, run_sync, validate_steps
+from .actions import LANDING_MS, PARTS, RETRY_MS, SCROLL_PASSES, Actions, Host, Missed, run_async, run_sync, validate_steps
 from .cursor import Cursor, create_cursor
 from .drivers import (
     CdpDriver,
@@ -65,6 +65,7 @@ __all__ = [
     "Actions",
     "Host",
     "Missed",
+    "LANDING_MS",
     "PARTS",
     "RETRY_MS",
     "SCROLL_PASSES",

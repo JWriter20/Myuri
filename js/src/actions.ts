@@ -97,6 +97,9 @@ export const RETRY_MS = [0, 20, 100, 100, 500]
 /** Scroll plans played before an element is taken as in view (one that moves as it scrolls needs more than one). */
 export const SCROLL_PASSES = 3
 
+/** How often a wheel's scroll is checked for having landed, and how long it may take. */
+export const LANDING_MS = [50, 1000] as const
+
 const BUTTONS: Button[] = ['left', 'right', 'middle']
 
 /** A click could not reach its element; the message says why. */
@@ -438,6 +441,23 @@ export class Actions<T = unknown> {
       // Over the scroller the plan chose, so the wheel scrolls it.
       await this.part('move', [plan.hoverX, plan.hoverY])
       await this.part('wheel', [0, plan.deltaY])
+      await this.landed(target)
+    }
+  }
+
+  /**
+   * Wait until the element stops moving, as a person waits for a scroll to
+   * land before aiming; a page that never stops is given `LANDING_MS`.
+   */
+  private async landed(target: T): Promise<void> {
+    const [every, limit] = LANDING_MS
+    const deadline = this.host.now() + limit
+    let last = await this.measure(target)
+    while (this.host.now() < deadline) {
+      await this.wait(every)
+      const plan = await this.measure(target)
+      if (JSON.stringify(plan?.box) === JSON.stringify(last?.box)) return
+      last = plan
     }
   }
 

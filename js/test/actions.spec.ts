@@ -111,6 +111,18 @@ describe('Actions.click', () => {
     expect(at[2]).toBeLessThanOrEqual(box.y + box.height)
   })
 
+  it("waits for the wheel's scroll to land before it aims", async () => {
+    const landing = [700, 550].map((y) => ({ ...inView, region: { ...box, y }, box: { ...box, y } }))
+    const host = new FakeHost([below, ...landing, inView])
+    await actions(host).click('#t')
+    expect(host.kinds().filter((k) => k === 'click')).toHaveLength(1)
+    const at = host.calls.filter((c) => c[0] === 'move').at(-1) as number[]
+    expect(at[1]).toBeGreaterThanOrEqual(box.x)
+    expect(at[1]).toBeLessThanOrEqual(box.x + box.width)
+    expect(at[2]).toBeGreaterThanOrEqual(box.y)
+    expect(at[2]).toBeLessThanOrEqual(box.y + box.height)
+  })
+
   it('tries a miss again after a wait, as Playwright retries an action', async () => {
     const host = new FakeHost([inView], ['<div> intercepts pointer events', null])
     await actions(host).click('#t')

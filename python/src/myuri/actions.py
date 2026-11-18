@@ -53,6 +53,9 @@ RETRY_MS = (0, 20, 100, 100, 500)
 SCROLL_PASSES = 3
 """Scroll plans played before an element is taken as in view (one that moves as it scrolls needs more than one)."""
 
+LANDING_MS = (50, 1000)
+"""How often a wheel's scroll is checked for having landed, and how long it may take."""
+
 _BUTTONS = ("left", "right", "middle")
 
 
@@ -452,6 +455,21 @@ class Actions:
             # Over the scroller the plan chose, so the wheel scrolls it.
             yield from self._part("move", plan["hoverX"], plan["hoverY"])
             yield from self._part("wheel", 0, plan["deltaY"])
+            yield from self._landed(target)
+        return None
+
+    def _landed(self, target: Any) -> Flow:
+        """Wait until the element stops moving, as a person waits for a scroll
+        to land before aiming; a page that never stops is given ``LANDING_MS``."""
+        every, limit = LANDING_MS
+        deadline = self.host.now() + limit
+        last = yield from self.measure(target)
+        while self.host.now() < deadline:
+            yield from self._wait(every)
+            plan = yield from self.measure(target)
+            if (plan and plan["box"]) == (last and last["box"]):
+                return None
+            last = plan
         return None
 
     def _default_wheel(self, dx: float, dy: float) -> Flow:
@@ -467,4 +485,4 @@ class Actions:
         return (yield from self.play(_key_steps(plan_press(key, self.rng, os=self.os, wpm=self.wpm))))
 
 
-__all__ = ["Actions", "Host", "Missed", "PARTS", "RETRY_MS", "SCROLL_PASSES", "run_async", "run_sync", "validate_steps"]
+__all__ = ["Actions", "Host", "LANDING_MS", "Missed", "PARTS", "RETRY_MS", "SCROLL_PASSES", "run_async", "run_sync", "validate_steps"]
