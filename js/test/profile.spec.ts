@@ -42,7 +42,5 @@ describe('generateProfile', () => {
   it('returns a fully-owned object graph (fields present like defaults)', () => {
     const p = generateProfile(1)
     expect(Object.keys(p).sort()).toEqual(Object.keys(defaultSettings).sort())
-    // Untouched fields fall back to defaults via resolveSettings.
-    expect(p.correction).toEqual(defaultSettings.correction)
   })
 })

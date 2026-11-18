@@ -1,8 +1,8 @@
 """Headless Cursor integration tests.
 
-Python can't run the JS page-functions locally, so the fake driver answers
-``evaluate`` by recognizing each payload (scroll-plan / viewport / bounding-box /
-wait / point-hit / scroll) and returning canned geometry for a single element.
+Python can't run the page functions locally, so the fake driver answers
+``evaluate`` by recognizing each one and returning canned geometry for a single
+element.
 """
 import asyncio
 import time
@@ -12,8 +12,11 @@ import pytest
 from myuri import ClickOptions, Cursor, ScrollOptions, TypeOptions
 from myuri.motion.scroll_model import scroll_model
 from myuri.drivers.base import Driver
+from myuri.page_functions import BOX_JS, FOCUSED_FIELD_JS, HIT_TEST_JS, SCROLL_PLAN_JS, on_selector
 
 RECT = {"x": 100, "y": 100, "width": 200, "height": 50}
+PLAN_JS, HIT_JS, ELEMENT_BOX_JS = (on_selector(fn) for fn in (SCROLL_PLAN_JS, HIT_TEST_JS, BOX_JS))
+PRESENT_JS = on_selector("() => true")
 
 
 class FakeDriver(Driver):
@@ -44,7 +47,7 @@ class FakeDriver(Driver):
         self.calls.append(("press", key))
 
     async def evaluate(self, js, arg=None):
-        if "visualLines" in js:  # focused field (clear_existing)
+        if js == FOCUSED_FIELD_JS:
             return {
                 "box": dict(RECT),
                 "empty": self.field_text == "",
@@ -54,28 +57,31 @@ class FakeDriver(Driver):
                 "scrollTop": 0,
                 "firstLine": {"x": RECT["x"] + 8, "y": RECT["y"] + 25},
             }
-        if "wheelReaches" in js:  # scroll plan: element visible, nothing to scroll
-            return {
-                "inView": True,
-                "deltaY": 0,
-                "hoverX": arg["fromX"],
-                "hoverY": arg["fromY"],
-                "isPage": True,
-                "region": dict(RECT),
-            }
+        if js == PLAN_JS:  # element visible, nothing to scroll
+            return self.plan(arg["arg"])
+        if js == HIT_JS:
+            x, y = arg["arg"]["x"], arg["arg"]["y"]
+            inside = RECT["x"] <= x <= RECT["x"] + RECT["width"] and RECT["y"] <= y <= RECT["y"] + RECT["height"]
+            return None if inside else "<div> intercepts pointer events"
+        if js in (ELEMENT_BOX_JS, PRESENT_JS):
+            return dict(RECT)
         if "innerWidth" in js:
             return {"width": 1280, "height": 720}
-        if "requireVisible" in js:
-            return True
-        if "elementFromPoint" in js:  # point-hit test
-            x, y = arg["x"], arg["y"]
-            inside = RECT["x"] <= x <= RECT["x"] + RECT["width"] and RECT["y"] <= y <= RECT["y"] + RECT["height"]
-            return inside
         if "scrollY" in js:
-            return {"offset": 0, "maxOffset": 2000}
-        if "getBoundingClientRect" in js:
-            return dict(RECT)
-        return None
+            return 0
+        raise AssertionError(f"unexpected page function: {js[:80]}")
+
+    def plan(self, arg):
+        return {
+            "inView": True,
+            "deltaY": 0,
+            "hoverX": arg["fromX"],
+            "hoverY": arg["fromY"],
+            "isPage": True,
+            "region": dict(RECT),
+            "box": dict(RECT),
+            "borders": [0, 0],
+        }
 
     def is_closed(self):
         return False
@@ -185,17 +191,8 @@ class SlowWheelDriver(FakeDriver):
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def evaluate(self, js, arg=None):
-        if "wheelReaches" in js:  # scroll plan: page must scroll down 1500px
-            return {
-                "inView": False,
-                "deltaY": 1500,
-                "hoverX": 400,
-                "hoverY": 300,
-                "isPage": True,
-                "region": dict(RECT),
-            }
-        return await super().evaluate(js, arg)
+    def plan(self, arg):  # the page must scroll down 1500px
+        return {**super().plan(arg), "inView": False, "deltaY": 1500, "hoverX": 400, "hoverY": 300}
 
     async def wheel(self, delta_x, delta_y):
         self.sent.append((time.monotonic() * 1000, delta_y))

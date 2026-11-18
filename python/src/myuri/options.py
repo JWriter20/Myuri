@@ -44,16 +44,14 @@ class MoveOptions(BoxOptions, PathOptions):
     """Options for moving the cursor to an element."""
 
     max_tries: Optional[int] = None
-    """Retries if the cursor misses the element. Default 3."""
+    """Tries before a miss is raised. Default: try again until ``timeout``."""
     overshoot_threshold: Optional[float] = None
     """Straight-line distance beyond which the move overshoots then corrects."""
-    wait_for_selector: Optional[float] = None
-    """ms to wait for the selector before failing. Default 10000."""
     move_delay: Optional[float] = None
     """Delay after the move completes (ms)."""
     randomize_move_delay: Optional[bool] = None
     timeout: Optional[float] = None
-    """Overall move timeout (ms); aborts the whole attempt."""
+    """ms to keep trying (waiting for the element, scrolling, retrying a miss). Default 10000."""
     exclude_selectors: Optional[Union[str, Sequence[str]]] = None
     """Selectors whose boxes the destination point must avoid."""
 
@@ -70,10 +68,6 @@ class ClickOptions(MoveOptions):
     per click from recorded people (median ~97 ms). Set it for a long press."""
     wait_for_click: Optional[float] = None
     """ms to wait after the click before the next action."""
-    micro_jitter: Optional[bool] = None
-    """Nudge 1px right before clicking."""
-    dynamic_adjustment: Optional[bool] = None
-    """Re-check the target box just before clicking and correct if it moved."""
 
 
 @dataclass
@@ -113,23 +107,22 @@ class ScrollRealismOptions:
 class ScrollOptions:
     """Options for scrolling an element into view."""
 
-    delay: Optional[float] = None
     speed_factor: Optional[float] = None
-    overshoot: Optional[float] = None
     finish_position: Optional[float] = None
     """Where the element lands in the viewport: 0=top, 0.5=center, 1=bottom."""
     realism: Optional[ScrollRealismOptions] = None
-    wait_for_selector: Optional[float] = None
+    timeout: Optional[float] = None
+    """ms to wait for the element. Default 10000."""
     max_tries: Optional[int] = None
+    """Scroll passes before giving up. Default 3."""
 
 
 @dataclass
 class TypeOptions:
     """Options for typing into an element."""
 
-    delay: Optional[float] = None
-    """Per-key delay hint (ms); the Markov model is the primary timing source."""
-    wait_for_selector: Optional[float] = None
+    timeout: Optional[float] = None
+    """ms to keep trying to click the field. Default 10000."""
     max_tries: Optional[int] = None
     clear_existing: Optional[bool] = None
     """Select-all + delete existing content before typing."""

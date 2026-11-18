@@ -246,9 +246,7 @@ milliseconds from the start of the plan.
 | `planSelectAll(rng, { os })` | `plan_select_all(rng, *, os)` | Cmd+A or Ctrl+A for `os` |
 | `planWheel(dx, dy, rng, { os, device, settings })` | `plan_wheel(dx, dy, rng, *, os, device, settings)` | `['wheel', dx, dy, t]` and `['key', 'Shift', 'down' \| 'up', t]` steps |
 
-Keys are Playwright key names. `SCROLL_PLAN_JS` is the page function the Cursor uses to plan
-a scroll to an element, as `(element, { finishPosition, pad, edge, fromX, fromY })`, with the Cursor's
-values in `SCROLL_FINISH_POSITION`, `SCROLL_PAD` and `SCROLL_EDGE`.
+Keys are Playwright key names.
 
 ```ts
 import { makeRng, planMove, planClick } from '@jwriter20/myuri'
@@ -256,6 +254,78 @@ import { makeRng, planMove, planClick } from '@jwriter20/myuri'
 const rng = makeRng(1234)
 const path = planMove({ x: 10, y: 20 }, { x: 800, y: 450 }, rng)
 const click = planClick(rng, { clickCount: 2 })
+```
+
+## Smart actions on your own host
+
+`Actions` is what a Cursor runs: the timing and motion of every input, and the decisions
+around a click. A click scrolls the element into view with the wheel, picks a point a
+person would, checks that a press there reaches the element (nothing covers it), and tries
+again after a short wait when it does not, as Playwright retries an action. A miss throws
+`Missed` with the reason. The host only sends each event, so the same actions run on a
+browser that shapes its own input (Camoufox does) or on anything else that can move a
+mouse and run JS in a page.
+
+A host has `move`, `click(button, clickCount, holdMs)`, `down`, `up`, `wheel`, `keyDown`,
+`keyUp`, `insertText`, `evaluate(target, fn, arg)` (run a page function on the target's
+element), `offset(target)` (the target's window offset from the page, or null when it has
+no element), `viewport()`, `now()` (ms) and `sleep(ms)`. A target is whatever the host
+resolves: a selector, a Playwright locator. The page functions are `SCROLL_PLAN_JS` and
+`HIT_TEST_JS`; the Python package runs the same source as the JS one.
+
+```ts
+import { Actions, makeRng } from '@jwriter20/myuri'
+
+const actions = new Actions(host, makeRng(1234), { os: 'windows' })
+await actions.click('#submit', { timeout: 10000 })
+await actions.type('hello')
+```
+
+```python
+from myuri import Actions, make_rng
+
+actions = Actions(host, make_rng(1234), os="windows", asynchronous=True)
+await actions.run(actions.click("#submit", timeout=10000))
+await actions.run(actions.type("hello"))
+```
+
+In Python each action is a flow: `actions.run(flow)` runs it, awaiting the host's calls
+with `asynchronous=True`, or returning their results on a synchronous host.
+
+### Replacing a part
+
+The actions are built from parts. Pass `parts` to replace any of them; the rest, and every
+action that uses the one you replaced, stay myuri's. A replaced scroll is the scroll a
+click uses too.
+
+| Part | Does |
+|---|---|
+| `move(x, y)` | moves the cursor to (x, y) |
+| `press(button, clickCount)` | presses where the cursor is |
+| `point(box, attempt)` | the point in the element's visible box to press |
+| `reaches(target, x, y, pressing)` | why a press at (x, y) would miss the element, or null |
+| `intoView(target)` / `into_view` | scrolls the element into view |
+| `wheel(dx, dy)` | turns the wheel |
+| `type(text)` / `key(key)` | types text, or presses a key or chord |
+
+A part is called with the host, its arguments and a context: `default` runs myuri's part
+(with the same arguments when given none), `rng` is the action's random stream, and
+`play(steps)` plays a timeline (the `planWheel` / `plan_type` steps above).
+
+```ts
+const actions = new Actions(host, makeRng(1234), {
+  parts: {
+    intoView: async (host, target) => { await myScroll(target) },
+    move: (host, x, y, { default: myuris }) => myuris(),
+  },
+})
+```
+
+```python
+def into_view(host, target, *, default, rng, play):
+    return my_scroll(target)
+
+actions = Actions(host, make_rng(1234), parts={"into_view": into_view}, asynchronous=True)
 ```
 
 ## Determinism

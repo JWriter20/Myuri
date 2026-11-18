@@ -51,10 +51,7 @@ export {
   planPress,
   planSelectAll,
   planWheel,
-  SCROLL_PLAN_JS,
-  SCROLL_FINISH_POSITION,
-  SCROLL_PAD,
-  SCROLL_EDGE,
+  wheelSteps,
   type PlannedPoint,
   type PlanMoveOptions,
   type ClickPlan,
@@ -63,9 +60,36 @@ export {
   type PlanTypeOptions,
   type WheelStep,
   type PlanWheelOptions,
+} from './plan.js'
+
+// The smart actions on any host (see actions.ts): each part can be swapped.
+export {
+  Actions,
+  Missed,
+  validateSteps,
+  PARTS,
+  RETRY_MS,
+  SCROLL_PASSES,
+  type Host,
+  type Step,
+  type Button,
+  type Parts,
+  type PartContext,
+  type Measured,
+  type ActionsOptions,
+  type ClickOptions as ActionClickOptions,
+} from './actions.js'
+
+// Page functions the actions evaluate, one source for every language (page_functions.json).
+export { RESOLVE_SELECTOR_JS, HIT_TEST_JS, onSelector, type HitTestArgs } from './page-functions.js'
+export {
+  SCROLL_PLAN_JS,
+  SCROLL_FINISH_POSITION,
+  SCROLL_PAD,
+  SCROLL_EDGE,
   type ScrollPlan,
   type ScrollPlanArgs,
-} from './plan.js'
+} from './scroll-plan.js'
 
 // Seed -> behavioral profile (the "behavioral fingerprint").
 export { generateProfile } from './profile.js'

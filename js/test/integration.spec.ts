@@ -4,6 +4,23 @@ import { type Driver, type PageFunction } from '../src/drivers/types.js'
 import { scrollModel, type ScrollEvent } from '../src/motion/scroll-model.js'
 
 /**
+ * Replace globals for one page-function call and return the undo. Defined, not
+ * assigned: Node 21+ has a getter-only `navigator`.
+ */
+function stubGlobals(values: Record<string, unknown>): () => void {
+  const names = ['document', 'window', 'navigator']
+  const saved = names.map((n) => Object.getOwnPropertyDescriptor(globalThis, n))
+  for (const [n, value] of Object.entries(values))
+    Object.defineProperty(globalThis, n, { value, configurable: true, writable: true })
+  return () =>
+    names.forEach((n, i) => {
+      const d = saved[i]
+      if (d) Object.defineProperty(globalThis, n, d)
+      else delete (globalThis as Record<string, unknown>)[n]
+    })
+}
+
+/**
  * A headless driver that runs page-functions against a minimal DOM stub, so the
  * whole Cursor -> page-query -> driver path can be exercised without a browser.
  * A single element sits at the given rect; `elementFromPoint` reports it for any
@@ -14,9 +31,18 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
   const record = (op: string, ...args: unknown[]) => calls.push({ op, args })
 
   const el = {
+    tagName: 'BUTTON',
+    localName: 'button',
     shadowRoot: null,
     parentNode: null,
+    parentElement: null,
     assignedSlot: null,
+    get ownerDocument() {
+      return documentStub
+    },
+    matches: () => false,
+    closest: () => null,
+    contains: (node: unknown) => node === el,
     // cursor.ts walks up via parentElement, falling back to getRootNode() to
     // detect a shadow host. This top-level stub has no shadow root, so return a
     // document-like root with no `.host` (traversal stops there).
@@ -50,13 +76,23 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
         bottom: 720,
       }),
     },
+    body: {},
+    get defaultView() {
+      return windowStub
+    },
     querySelector: (_sel: string) => el,
     querySelectorAll: (_sel: string) => [] as unknown[],
     evaluate: () => ({ singleNodeValue: null }),
     elementFromPoint: (x: number, y: number) =>
       x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height ? el : null,
   }
-  const windowStub = { innerWidth: 1280, innerHeight: 720, scrollY: 0 }
+  const windowStub = {
+    innerWidth: 1280,
+    innerHeight: 720,
+    scrollY: 0,
+    frameElement: null,
+    getComputedStyle: () => ({ visibility: 'visible', position: 'static', overflowY: 'visible' }),
+  }
   const navigatorStub = { platform: 'Linux x86_64', userAgent: 'test' }
 
   const driver: Driver = {
@@ -79,17 +115,11 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
       record('press', key)
     },
     async evaluate<A, R>(fn: PageFunction<A, R>, arg: A): Promise<R> {
-      const g = globalThis as Record<string, unknown>
-      const saved = { document: g.document, window: g.window, navigator: g.navigator }
-      g.document = documentStub
-      g.window = windowStub
-      g.navigator = navigatorStub
+      const restore = stubGlobals({ document: documentStub, window: windowStub, navigator: navigatorStub })
       try {
         return (await fn(arg)) as R
       } finally {
-        g.document = saved.document
-        g.window = saved.window
-        g.navigator = saved.navigator
+        restore()
       }
     },
     isClosed() {
@@ -102,13 +132,7 @@ function makeFakeDriver(rect = { x: 100, y: 100, width: 200, height: 50 }) {
 describe('Cursor (headless integration)', () => {
   let restore: () => void
   beforeEach(() => {
-    const g = globalThis as Record<string, unknown>
-    const prev = { document: g.document, window: g.window, navigator: g.navigator }
-    restore = () => {
-      g.document = prev.document
-      g.window = prev.window
-      g.navigator = prev.navigator
-    }
+    restore = stubGlobals({})
   })
   afterEach(() => restore())
 

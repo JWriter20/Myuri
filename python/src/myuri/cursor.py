@@ -1,40 +1,34 @@
-"""The Cursor: a human-like cursor bound to a :class:`Driver` (mirror of
-``js/src/cursor.ts``)."""
+"""The Cursor: a human-like cursor bound to a :class:`Driver`, on myuri's
+smart actions (``actions.py``). Mirror of ``js/src/cursor.ts``."""
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import math
 import time
-from dataclasses import replace
-from typing import Any, List, Optional, Union
+from contextlib import contextmanager
+from typing import Any, Iterator, List, Optional, Union
 
+from .actions import Actions, Flow
 from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
-from .geometry import (
-    PlannedPoint,
-    clamp_to_browser_bounds,
-    get_better_starting_position,
-    get_random_box_point,
-    should_overshoot,
-)
+from .geometry import get_better_starting_position, get_random_box_point, is_point_excluded
 from .motion.click_model import drag_carry_speed, drag_end_ms, drag_start_ms, pre_click_dwell_ms
 from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
-from .target_os import primary_modifier
-from .page import (
-    bounding_box_of,
-    point_hits_target,
-    scroll_metrics_of,
-    viewport_of,
-    wait_for_element,
-)
-from .plan import WheelSpec, clicks_with, move_with, plan_click, wheel_style_for, wheel_with
+from .page import bounding_box_of, scroll_offset_of, viewport_of, wait_for_element
+from .page_functions import FOCUSED_FIELD_JS, on_selector
+from .plan import WheelSpec, wheel_steps, wheel_style_for
 from .profile import profile_from_seed
-from .rng import generate_random_seed, make_rng
-from .scroll_plan import SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_FOR_SELECTOR
+from .rng import Rng, generate_random_seed, make_rng
 from .settings import resolve_settings
+from .target_os import primary_modifier
 from .types import BoundingBox, Vector, point_in_box
 from .typing_engine.typer import HumanTyper
+
+_BOX_FIELDS = (
+    "width_padding_percentage", "height_padding_percentage",
+    "padding_left", "padding_right", "padding_top", "padding_bottom",
+)
+_PRESENT = on_selector("() => true")
 
 
 async def _delay(ms: float) -> None:
@@ -43,88 +37,128 @@ async def _delay(ms: float) -> None:
     await asyncio.sleep(ms / 1000.0)
 
 
-# Page function for clear_existing (mirror of ``focusedField`` in js/src/cursor.ts):
-# the focused field, found by following focus through open shadow roots and
-# same-origin iframes, with its box in top-page coordinates. Null when no field
-# has focus (or it sits in a cross-origin frame). Tag names, not instanceof,
-# since elements in an iframe belong to that frame's realm.
-_FOCUSED_FIELD_JS = r"""() => {
-  var el = document.activeElement, ox = 0, oy = 0;
-  for (;;) {
-    if (!el) return null;
-    if (el.shadowRoot && el.shadowRoot.activeElement) {
-      el = el.shadowRoot.activeElement;
-    } else if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-      var fdoc = null;
-      try { fdoc = el.contentDocument; } catch (e) { fdoc = null; }
-      if (!fdoc) return null;
-      var fr = el.getBoundingClientRect();
-      ox += fr.x + el.clientLeft;
-      oy += fr.y + el.clientTop;
-      el = fdoc.activeElement;
-    } else {
-      break;
-    }
-  }
-  var doc = el.ownerDocument;
-  // A frame's body only counts when it is itself the editor (designMode or
-  // contenteditable), as rich-text editors built on iframes do.
-  if (el === doc.body && !el.isContentEditable) return null;
-  var r = el.getBoundingClientRect();
-  var cs = (doc.defaultView || window).getComputedStyle(el);
-  var isTextControl = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
-  var text = isTextControl ? el.value : el.innerText.replace(/\n+$/, '');
-  var lineHeight = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
-  var firstLine = {
-    x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft) + 6,
-    y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop + lineHeight / 2
-  };
-  var contentLeft = r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
-  var lineTop = r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop) - el.scrollTop;
-  var span = { left: contentLeft, right: contentLeft, top: lineTop, bottom: lineTop + lineHeight };
-  if (el.tagName === 'TEXTAREA') {
-    var ctx = doc.createElement('canvas').getContext('2d');
-    if (ctx) {
-      ctx.font = cs.font;
-      span.right = contentLeft + ctx.measureText(text.split('\n')[0]).width;
-    }
-  }
-  var selection;
-  if (isTextControl) {
-    // email/number inputs expose no selection range; they are single-line,
-    // which triple-click always selects whole.
-    selection = el.selectionStart == null || (el.selectionStart === 0 && el.selectionEnd === text.length)
-      ? 'all' : 'partial';
-  } else {
-    selection = String(doc.getSelection()).trim() === el.innerText.trim() ? 'all' : 'partial';
-    // Rich content: aim at the first visible character instead.
-    var walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    for (var n = walker.nextNode(); n; n = walker.nextNode()) {
-      var i = (n.textContent || '').search(/\S/);
-      if (i < 0) continue;
-      var range = doc.createRange();
-      range.setStart(n, i);
-      range.setEnd(n, i + 1);
-      var c = range.getBoundingClientRect();
-      firstLine = { x: c.left + c.width / 2 + 4, y: c.top + c.height / 2 };
-      range.setEnd(n, (n.textContent || '').length);
-      var line = range.getClientRects()[0] || c;
-      span = { left: c.left, right: line.right, top: line.top, bottom: line.bottom };
-      break;
-    }
-  }
-  return {
-    box: { x: r.x + ox, y: r.y + oy, width: r.width, height: r.height },
-    empty: text.trim() === '',
-    selection: selection,
-    lines: text === '' ? 1 : text.split('\n').length,
-    singleLine: el.tagName === 'INPUT',
-    firstLineSpan: { left: span.left + ox, right: span.right + ox, top: span.top + oy, bottom: span.bottom + oy },
-    visualLines: Math.ceil(el.scrollHeight / lineHeight),
-    scrollTop: el.scrollTop,
-    firstLine: { x: firstLine.x + ox, y: firstLine.y + oy }
-  };
-}"""
+class _DriverHost:
+    """A driver as the smart actions' host. A target is a selector, measured in the top page."""
+
+    def __init__(self, driver: Driver) -> None:
+        self.driver = driver
+        self._sent: List[asyncio.Future] = []
+
+    def move(self, x: float, y: float) -> Any:
+        return self.driver.move(x, y)
+
+    async def click(self, button: str, click_count: int, hold_ms: float) -> None:
+        # Drivers written before click_count/hold_ms get what they take.
+        click = self.driver.click
+        if _accepts_positional(click, 3):
+            await click(button, click_count, hold_ms)
+        elif _accepts_positional(click, 2):
+            await click(button, click_count)
+        else:
+            await click(button)
+
+    def down(self, button: str) -> Any:
+        return self.driver.mouse_down(button)
+
+    def up(self, button: str) -> Any:
+        return self.driver.mouse_up(button)
+
+    def wheel(self, dx: float, dy: float) -> None:
+        """Sent without waiting for the page, as a device sends them: a browser
+        acknowledges a wheel event only on its next frame, so awaiting each one
+        stretches a gesture. Tasks start in creation order over one connection,
+        so they arrive in order. :meth:`landed` waits for them."""
+        self._sent.append(asyncio.ensure_future(self.driver.wheel(dx, dy)))
+
+    async def landed(self) -> None:
+        sent, self._sent = self._sent, []
+        errors = [r for r in await asyncio.gather(*sent, return_exceptions=True) if isinstance(r, BaseException)]
+        if errors:
+            raise errors[0]
+
+    def key_down(self, key: str) -> Any:
+        return self.driver.down(key)
+
+    def key_up(self, key: str) -> Any:
+        return self.driver.up(key)
+
+    def insert_text(self, text: str) -> Any:
+        return self.driver.insert_text(text)
+
+    def evaluate(self, selector: str, fn: str, arg: Any) -> Any:
+        return self.driver.evaluate(on_selector(fn), {"selector": selector, "arg": arg})
+
+    async def offset(self, selector: str) -> Optional[tuple]:
+        return (0, 0) if await self.driver.evaluate(_PRESENT, {"selector": selector, "arg": None}) else None
+
+    async def viewport(self) -> tuple:
+        vp = await viewport_of(self.driver)
+        return (vp.width, vp.height)
+
+    def now(self) -> float:
+        return time.monotonic() * 1000.0
+
+    def sleep(self, ms: float) -> Any:
+        return _delay(ms)
+
+
+class _CursorActions(Actions):
+    """The smart actions with the Cursor's options: where in a box to press, and a calibrated wheel."""
+
+    def __init__(self, host: _DriverHost, rng: Rng, **options: Any) -> None:
+        super().__init__(host, rng, asynchronous=True, **options)
+        # Padding and boxes to avoid when choosing a point, for the action under way.
+        self.box_options: Optional[MoveOptions] = None
+        self.exclude: List[BoundingBox] = []
+        self.speed_factor: float = self.settings.scroll.speed_factor
+        self.speed_irregularity: float = self.settings.scroll.realism.speed_irregularity
+        # Wheel px per page px, calibrated on the first page scroll (drivers and DPRs scale a delta).
+        self._scroll_multiplier: Optional[float] = None
+
+    @property
+    def since_move(self) -> float:
+        return self.host.now() - self._moved_at
+
+    def _default_point(self, box: BoundingBox, attempt: int) -> Flow:
+        if self.box_options is None:
+            return (yield from super()._default_point(box, attempt))
+        here = self.cursor
+        # A person already on the target presses where they are.
+        if here is not None and self._placed and point_in_box(here, box) and not is_point_excluded(here, self.exclude):
+            return (here.x, here.y)
+        p = get_random_box_point(box, self.box_options, here, self.exclude, self.rng)
+        return (p.x, p.y)
+
+    def _default_wheel(self, dx: float, dy: float) -> Flow:
+        host = self.host
+        m = self._scroll_multiplier or 1
+        s = self.settings.scroll
+        spec = WheelSpec(self.device, s.wheel, self.speed_irregularity)
+        steps = [(*step[:-1], step[-1] / self.speed_factor) for step in wheel_steps(dx * m, dy * m, self.rng, os=self.os, spec=spec)]
+        dispatched = sum(step[2] for step in steps if step[0] == "wheel")
+        pre = yield scroll_offset_of(host.driver)
+        yield from self.play(steps)
+        yield host.landed()
+        moved = (yield self._settle(pre)) - pre
+        # Clamped: a first scroll cut short by the end of the page would inflate every later one.
+        if self._scroll_multiplier is None and abs(dispatched) > 10 and abs(moved) > 10:
+            self._scroll_multiplier = min(3.0, max(0.3, round((dispatched / moved) * 100) / 100))
+
+    async def _settle(self, previous: float) -> float:
+        """The page's scroll offset once it stops moving (a container scroll leaves it still)."""
+        last = previous
+        stable = 0
+        deadline = time.monotonic() + 0.6
+        while True:
+            await _delay(40)
+            cur = await scroll_offset_of(self.host.driver)
+            if cur == last:
+                stable += 1
+            else:
+                stable = 0
+                last = cur
+            if stable >= 3 or time.monotonic() >= deadline:
+                return cur
 
 
 def _pick(opt: Any, name: str, default: Any) -> Any:
@@ -151,6 +185,8 @@ class _DriverTyperInput:
 
 
 class Cursor:
+    """A human-like cursor bound to a :class:`Driver`, on myuri's smart actions (``actions.py``)."""
+
     def __init__(
         self,
         driver: Driver,
@@ -169,40 +205,33 @@ class Cursor:
         # The OS the browser claims: it picks the paste modifier, whether a move
         # repeats a position and how a mouse wheel scrolls (target_os.py).
         # Timing is the same on every OS.
-        self._os = os
         if os is not None:
             driver.os = os
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
         self._rng = make_rng(self._seed)
-        # An explicit ``settings`` override always wins (back-compat). Otherwise,
-        # if the caller supplied a seed, derive a stable behavioral profile from
-        # it so the same seed yields the same "personality"; with neither, use
-        # defaults.
+        # An explicit ``settings`` override always wins. Otherwise, a seed
+        # derives a stable behavioral profile, so the same seed yields the same
+        # "personality".
         if settings is not None:
-            self._settings = resolve_settings(settings)
+            resolved = resolve_settings(settings)
         elif seed is not None:
-            self._settings = profile_from_seed(self._seed)
+            resolved = profile_from_seed(self._seed)
         else:
-            self._settings = resolve_settings(None)
-        self._settings.scroll.wheel.style = wheel_style_for(os, settings)
+            resolved = resolve_settings(None)
+        resolved.scroll.wheel.style = wheel_style_for(os, settings)
+        self._actions = _CursorActions(_DriverHost(driver), self._rng, os=os, settings=resolved)
+        self._settings = self._actions.settings
         self._defaults = defaults or {}
         # Opt-in keyboard select-all for clear_existing. Off by default: the
         # modifier reveals the real OS (pages read ctrlKey/metaKey, and browsers
         # only honor the host OS's one), so fields are cleared by triple-click.
         self._select_all_modifier = select_all_modifier
-        self._previous = start or get_better_starting_position(dimensions, self._rng)
-        # The browser's pointer is at _previous (until the first move it is only a guess).
-        self._placed = False
-        # time.monotonic() of the last mouse move, for the pause before a press.
-        self._last_move_at = 0.0
-        # time.monotonic() of the last release by _clicks, for a run of presses in place.
-        self._last_release_at = -math.inf
+        self._actions.cursor = start or get_better_starting_position(dimensions, self._rng)
         self._is_moving = False
         self._performing_random_moves = False
         self._random_move_task: Optional[asyncio.Task] = None
         self._disposed = False
-        self._scroll_multiplier: Optional[float] = None
 
         self._typer = HumanTyper(
             _DriverTyperInput(driver),
@@ -222,7 +251,8 @@ class Cursor:
         return self._settings
 
     def get_location(self) -> Vector:
-        return Vector(self._previous.x, self._previous.y)
+        here = self._actions.cursor
+        return Vector(here.x, here.y)
 
     # ---- action lifecycle ----
     def _start_action(self) -> bool:
@@ -238,6 +268,25 @@ class Cursor:
         await _delay(move_delay * jitter)
         if was_random:
             self._set_random_move(True)
+
+    @contextmanager
+    def _tuned(self, **tuning: Any) -> Iterator[None]:
+        """Apply ``tuning`` to the actions for one call, then restore them."""
+        saved = {}
+        for name, value in tuning.items():
+            if value is not None:
+                saved[name] = getattr(self._actions, name)
+                setattr(self._actions, name, value)
+        try:
+            yield
+        finally:
+            for name, value in saved.items():
+                setattr(self._actions, name, value)
+
+    async def _glide(self, to: Vector, move_speed: Optional[float] = None) -> None:
+        """A move straight to a point, without an overshoot."""
+        with self._tuned(move_speed=move_speed, overshoot_threshold=math.inf):
+            await self._actions.run(self._actions.move(to.x, to.y))
 
     def toggle_random_move(self, random: bool) -> None:
         self._set_random_move(random)
@@ -275,191 +324,54 @@ class Cursor:
 
     async def _perform_random_move(self, opts: dict) -> None:
         vp = await viewport_of(self._driver)
-        target = get_random_box_point(
-            BoundingBox(0, 0, vp.width, vp.height), None, self._previous, None, self._rng
-        )
+        target = get_random_box_point(BoundingBox(0, 0, vp.width, vp.height), None, self._actions.cursor, None, self._rng)
         await self.move_to(target, MoveToOptions(move_speed=opts.get("move_speed"), move_delay=0, randomize_move_delay=False))
         if self._performing_random_moves:
             self._schedule_random_move()
 
-    # ---- primitive motion ----
-    async def _clicks(self, button: str, first: int, last: int, hold_ms: Optional[float] = None) -> None:
-        """Clicks ``first``..``last`` of a multi-click where the cursor is,
-        timed like a person (``plan_click`` and ``clicks_with`` in ``plan.py``):
-        click 1 waits a drawn beat after the last move, or, with the pointer
-        still where it released, continues that run; each button is held a
-        drawn time.
-        Drivers written before ``click_count``/``hold_ms`` get what they take;
-        one without ``click_count`` makes plain clicks, so clearing a field
-        then reports it as not cleared.
-        """
-        resting = self._last_move_at < self._last_release_at
-        if first == 1:
-            since = (time.monotonic() - self._last_release_at) * 1000.0 if resting else None
-            planned = plan_click(self._rng, click_count=last, since_release_ms=since)
-            lead_ms, presses = planned["dwell_ms"], planned["presses"]
-            await _delay(lead_ms if resting else self._last_move_at * 1000.0 + lead_ms - time.monotonic() * 1000.0)
-        else:
-            lead_ms, presses = clicks_with(self._rng, first, last)
-            await _delay(lead_ms)
-        click = self._driver.click
-        for i, (down, up) in enumerate(presses):
-            if i > 0:
-                await _delay(down - presses[i - 1][1])
-            hold = up - down if hold_ms is None else hold_ms
-            if _accepts_positional(click, 3):
-                await click(button, first + i, hold)
-            elif _accepts_positional(click, 2):
-                await click(button, first + i)
-            else:
-                await click(button)
-        self._last_release_at = time.monotonic()
-
-    async def _move_along(self, destination: Vector, options, allow_overshoot: bool) -> None:
-        vp = await viewport_of(self._driver)
-
-        def settle(p: Vector) -> Vector:
-            clamped = clamp_to_browser_bounds(p.x, p.y, vp)
-            return Vector(round(clamped.x), round(clamped.y))
-
-        points = move_with(
-            self._previous,
-            destination,
-            self._rng,
-            move_speed=_pick(options, "move_speed", None),
-            overshoot=allow_overshoot,
-            settings=self._settings.overshoot,
-            settle=settle,
-        )
-        await self._trace_path(points, settle)
-
-    async def _trace_path(self, points: List[PlannedPoint], settle) -> None:
-        # An absolute schedule, so timer overshoot doesn't accumulate.
-        start = time.monotonic() * 1000.0
-        for p in points:
-            if self._driver.is_closed():
-                return
-            await _delay(start + p.t - time.monotonic() * 1000.0)
-            pos = settle(p)
-            # Only macOS reports a mouse that has not left its pixel; elsewhere it sends nothing.
-            if self._placed and self._os != "macos" and pos == self._previous:
-                continue
-            await self._driver.move(pos.x, pos.y)
-            self._previous = pos
-            self._placed = True
-            self._last_move_at = time.monotonic()
-
+    # ---- motion ----
     async def move_to(self, destination: Vector, options: Optional[MoveToOptions] = None) -> None:
+        """Move to an absolute viewport point."""
         was_random = self._start_action()
         try:
-            await self._move_along(destination, options, False)
+            await self._glide(destination, _pick(options, "move_speed", None))
         finally:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
 
-    async def _resolve_exclude_boxes(self, selectors) -> list:
-        if selectors is None:
-            return []
-        items = [selectors] if isinstance(selectors, str) else list(selectors)
-        boxes = []
-        for sel in items:
-            try:
-                box = await bounding_box_of(self._driver, sel)
-            except Exception:
-                box = None
+    async def _reach(self, selector: str, options: Any, press: bool, click_count: int = 1) -> None:
+        """Scroll an element into view, move onto it and, with ``press``, press
+        it. A miss is tried again, as Playwright retries an action, until
+        ``max_tries`` tries or ``timeout`` ms."""
+        selectors = _pick(options, "exclude_selectors", None)
+        exclude = []
+        for sel in [] if selectors is None else [selectors] if isinstance(selectors, str) else selectors:
+            box = await bounding_box_of(self._driver, sel)
             if box:
-                boxes.append(box)
-        return boxes
+                exclude.append(box)
+        custom = bool(exclude) or any(_pick(options, f, None) is not None for f in _BOX_FIELDS)
+        with self._tuned(
+            move_speed=_pick(options, "move_speed", None),
+            overshoot_threshold=_pick(options, "overshoot_threshold", None),
+            hold_ms=_pick(options, "hold_ms", None),
+            box_options=options if custom else None,
+            exclude=exclude if custom else None,
+        ):
+            await self._actions.run(self._actions.click(
+                selector,
+                button=_pick(options, "button", "left"),
+                click_count=click_count,
+                press=press,
+                timeout=_pick(options, "timeout", 10000),
+                attempts=_pick(options, "max_tries", None),
+            ))
 
     async def move(self, selector: str, options: Optional[MoveOptions] = None) -> None:
+        """Move the cursor onto an element, scrolling it into view and trying again if it misses."""
         was_random = self._start_action()
         try:
-            await self._move_to_element(selector, options)
+            await self._reach(selector, options, False)
         finally:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
-
-    async def _move_to_element(self, selector: str, options) -> None:
-        max_tries = _pick(options, "max_tries", 3)
-        wait_ms = _pick(options, "wait_for_selector", 10000)
-        timeout = _pick(options, "timeout", None)
-        overshoot_threshold = _pick(options, "overshoot_threshold", self._settings.overshoot.threshold)
-        deadline = (time.monotonic() + timeout / 1000.0) if timeout is not None else None
-        last_error: Optional[Exception] = None
-
-        for attempt in range(max_tries):
-            if self._driver.is_closed():
-                return
-            remaining_ms = wait_ms if deadline is None else (deadline - time.monotonic()) * 1000.0
-            if remaining_ms <= 0:
-                break
-            found = await wait_for_element(self._driver, selector, "visible", min(wait_ms, remaining_ms))
-            if not found:
-                last_error = RuntimeError(f"myuri: element not found or not visible: {selector}")
-                continue
-
-            # The mouse can only travel within the visible viewport, so a target
-            # outside it must be scrolled in first — via the stealthy wheel
-            # model, never an instant scrollIntoView. Loop over fresh plans: the
-            # wheel multiplier calibrates on the first pass, and each pass may
-            # escalate to an outer scroller once an inner one is exhausted.
-            scroll_opts = ScrollOptions(
-                finish_position=self._settings.scroll.finish_position,
-                speed_factor=self._settings.scroll.speed_factor,
-            )
-            finish_position = scroll_opts.finish_position or 0.5
-            plan = await self._compute_scroll_plan(selector, finish_position)
-            for _ in range(3):
-                if not plan or plan["inView"] or abs(plan["deltaY"]) < 1:
-                    break
-                await self._perform_scroll(plan, scroll_opts)
-                plan = await self._compute_scroll_plan(selector, finish_position)
-            if not plan:
-                last_error = RuntimeError(f"myuri: element has no box: {selector}")
-                continue
-            # No usable on-screen region even after scrolling: fail the attempt
-            # WITHOUT moving. Walking toward a clamped point at the viewport
-            # edge reads as robotic and can never land anyway.
-            if not plan.get("region"):
-                last_error = RuntimeError(
-                    f"myuri: could not bring {selector} into view (off-screen or covered by a pinned overlay)"
-                )
-                continue
-            region = plan["region"]
-            # Sample from the on-screen clip of the target, so a partially
-            # covered or partially scrolled-in element is clicked on its
-            # visible part.
-            box = BoundingBox(
-                x=region["x"], y=region["y"], width=region["width"], height=region["height"]
-            )
-            exclude_boxes = await self._resolve_exclude_boxes(_pick(options, "exclude_selectors", None))
-            # A person already on the target presses where they are.
-            if (
-                self._placed
-                and point_in_box(self._previous, box)
-                and not any(point_in_box(self._previous, b) for b in exclude_boxes)
-                and await point_hits_target(self._driver, self._previous, selector)
-            ):
-                return
-            # Widen the retry sample slightly each attempt to escape a repeated miss.
-            attempt_opts = options
-            if attempt > 0:
-                narrowed = max(
-                    0.0,
-                    _pick(options, "width_padding_percentage", 25)
-                    - self._settings.correction.retry_spread * attempt,
-                )
-                attempt_opts = (
-                    replace(options, width_padding_percentage=narrowed)
-                    if options is not None
-                    else MoveOptions(width_padding_percentage=narrowed)
-                )
-            destination = get_random_box_point(box, attempt_opts, self._previous, exclude_boxes, self._rng)
-            await self._move_along(destination, options, should_overshoot(self._previous, destination, overshoot_threshold))
-            final_box = await bounding_box_of(self._driver, selector)
-            if final_box and point_in_box(self._previous, final_box) and await point_hits_target(self._driver, self._previous, selector):
-                return
-            last_error = RuntimeError(f"myuri: cursor did not land on {selector}")
-        if last_error:
-            raise last_error
 
     async def drag(self, from_: Union[str, Vector], to: Union[str, Vector], options: Optional[DragOptions] = None) -> None:
         """Press on ``from_``, move to ``to`` with the button held, and release.
@@ -471,14 +383,14 @@ class Cursor:
         ``mouse_down``/``mouse_up`` (the built-in drivers have them).
         """
         opts = options if options is not None else DragOptions()
-        button = _pick(options, "button", "left")
+        button = _pick(opts, "button", "left")
         was_random = self._start_action()
         try:
             if isinstance(from_, str):
-                await self._move_to_element(from_, opts)
+                await self._reach(from_, opts, False)
             else:
-                await self._move_along(from_, opts, False)
-            await _delay(self._last_move_at * 1000.0 + pre_click_dwell_ms(self._rng) - time.monotonic() * 1000.0)
+                await self._glide(from_, opts.move_speed)
+            await _delay(pre_click_dwell_ms(self._rng) - self._actions.since_move)
             await self._driver.mouse_down(button)
             released = False
             try:
@@ -487,13 +399,12 @@ class Cursor:
                     box = await bounding_box_of(self._driver, to)
                     if not box:
                         raise RuntimeError(f"myuri: drag target not found or not visible: {to}")
-                    target = get_random_box_point(box, opts, self._previous, [], self._rng)
+                    target = get_random_box_point(box, opts, self._actions.cursor, [], self._rng)
                 else:
                     target = to
                 # Carrying something, people move slower and steer straight to the drop: no overshoot.
-                carry = dataclasses.replace(opts, move_speed=(_pick(opts, "move_speed", 1) or 1) * drag_carry_speed(self._rng))
-                await self._move_along(target, carry, False)
-                await _delay(self._last_move_at * 1000.0 + drag_end_ms(self._rng) - time.monotonic() * 1000.0)
+                await self._glide(target, (opts.move_speed or 1) * drag_carry_speed(self._rng))
+                await _delay(drag_end_ms(self._rng) - self._actions.since_move)
                 released = True
                 await self._driver.mouse_up(button)
             finally:
@@ -502,30 +413,20 @@ class Cursor:
                         await self._driver.mouse_up(button)
                     except Exception:
                         pass
-            await _delay(_pick(options, "wait_for_release", 50))
+            await _delay(_pick(opts, "wait_for_release", 50))
         finally:
             await self._end_action(was_random, 0, False)
 
     async def click(self, selector: Optional[str] = None, options: Optional[ClickOptions] = None) -> None:
+        """Click an element (scrolling to and moving onto it first) or click at the current position."""
         was_random = self._start_action()
         try:
-            button = _pick(options, "button", "left")
+            count = max(1, min(3, round(_pick(options, "click_count", 1))))
             if selector is not None:
-                move_opts = options if options is not None else ClickOptions()
-                await self._move_to_element(selector, move_opts)
-                if _pick(options, "dynamic_adjustment", True):
-                    final_box = await bounding_box_of(self._driver, selector)
-                    if final_box and not await point_hits_target(self._driver, self._previous, selector):
-                        exclude_boxes = await self._resolve_exclude_boxes(_pick(options, "exclude_selectors", None))
-                        target = get_random_box_point(final_box, options, self._previous, exclude_boxes, self._rng)
-                        await self._move_along(target, options, False)
-                if not await point_hits_target(self._driver, self._previous, selector):
-                    raise RuntimeError(f"myuri: click point is occluded for '{selector}'")
-                if _pick(options, "micro_jitter", False):
-                    await self._driver.move(self._previous.x + (self._rng() - 0.5) * 2, self._previous.y + (self._rng() - 0.5) * 2)
-                    await _delay(15 + self._rng() * 10)
-            count = max(1, min(3, round(_pick(options, "click_count", 1) or 1)))
-            await self._clicks(button, 1, count, _pick(options, "hold_ms", None))
+                await self._reach(selector, options, True, count)
+            else:
+                with self._tuned(hold_ms=_pick(options, "hold_ms", None)):
+                    await self._actions.run(self._actions.press(_pick(options, "button", "left"), count))
             await _delay(max(_pick(options, "wait_for_click", 50), 15))
         finally:
             await self._end_action(was_random, _pick(options, "move_delay", 0), _pick(options, "randomize_move_delay", True))
@@ -537,9 +438,10 @@ class Cursor:
         Triple-click selects a single-line field outright; multi-line content is
         triple-clicked on its first paragraph and extended with Shift+ArrowDown
         (the same keys on every OS). ``focus_clicked`` means the click that
-        focused the field just happened at the cursor, so it counts as click 1.
+        focused the field just happened at the cursor, so the triple-click
+        continues it.
         """
-        field = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+        field = await self._driver.evaluate(FOCUSED_FIELD_JS, None)
         if not field:
             raise RuntimeError("myuri: clear_existing needs a focused field (pass a selector)")
         if field["empty"]:
@@ -548,35 +450,34 @@ class Cursor:
             await self._typer.delete_all(0, self._select_all_modifier)
         else:
             box = BoundingBox(**field["box"])
-            if not point_in_box(self._previous, box):
-                await self._move_along(get_random_box_point(box, None, self._previous, [], self._rng), None, False)
+            if not point_in_box(self._actions.cursor, box):
+                await self._glide(get_random_box_point(box, None, self._actions.cursor, [], self._rng))
                 focus_clicked = False
-            first_click = 2 if focus_clicked else 1
-            # One line in a textarea or editor needs this too unless the cursor
-            # is already on the text: Firefox selects nothing when the clicks
-            # land in the blank space after it.
+            at = self._actions.cursor
             span = field.get("firstLineSpan")
-            on_first_line = span is None or (
-                span["left"] <= self._previous.x <= span["right"] - 2 and span["top"] <= self._previous.y <= span["bottom"]
-            )
+            on_first_line = span is None or (span["left"] <= at.x <= span["right"] - 2 and span["top"] <= at.y <= span["bottom"])
+            clicks = 2 if focus_clicked else 3
             if field["lines"] > 1 or (field.get("singleLine") is False and not on_first_line):
                 # Triple-click selects one paragraph, so start on the first one:
-                # wheel the field back to its top if needed, then click there.
+                # wheel the field back to its top if needed, then triple-click
+                # there. One line in a textarea or editor needs it too unless
+                # the cursor is already on the text (see firstLineSpan).
                 for _ in range(30):
                     if field["scrollTop"] <= 0:
                         break
                     await self._driver.wheel(0, -min(field["scrollTop"], 80 + self._rng() * 80))
                     await _delay(30 + self._rng() * 40)
-                    field = await self._driver.evaluate(_FOCUSED_FIELD_JS, None) or field
+                    field = await self._driver.evaluate(FOCUSED_FIELD_JS, None) or field
                 first = field["firstLine"]
-                await self._move_along(Vector(first["x"] + self._rng() * 12, first["y"] + (self._rng() - 0.5) * 3), None, False)
-                first_click = 1
-            await self._clicks("left", first_click, 3)
+                await self._glide(Vector(first["x"] + self._rng() * 12, first["y"] + (self._rng() - 0.5) * 3))
+                clicks = 3
+            # Right after the focusing click, a double click in place continues it into a triple.
+            await self._actions.run(self._actions.press("left", clicks))
             if field["lines"] > 1:
                 await _delay(120 + self._rng() * 120)
                 await self._driver.down("Shift")
                 for _ in range(max(field["lines"], field["visualLines"]) + 2):
-                    current = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+                    current = await self._driver.evaluate(FOCUSED_FIELD_JS, None)
                     if not current or current["selection"] != "partial":
                         break
                     await self._driver.press("ArrowDown")
@@ -584,15 +485,16 @@ class Cursor:
                 await self._driver.up("Shift")
             await _delay(60 + self._rng() * 90)
             await self._typer.delete_all(1)
-        after = await self._driver.evaluate(_FOCUSED_FIELD_JS, None)
+        after = await self._driver.evaluate(FOCUSED_FIELD_JS, None)
         if not (after and after["empty"]):
             raise RuntimeError("myuri: clear_existing could not empty the focused field")
 
     async def type(self, text: str, selector: Optional[str] = None, options: Optional[TypeOptions] = None) -> None:
+        """Type text, optionally clicking a field first."""
         was_random = self._start_action()
         try:
             if selector is not None:
-                await self.click(selector, ClickOptions(wait_for_click=30, wait_for_selector=_pick(options, "wait_for_selector", 10000), max_tries=_pick(options, "max_tries", 3)))
+                await self.click(selector, ClickOptions(wait_for_click=30, timeout=_pick(options, "timeout", None), max_tries=_pick(options, "max_tries", None)))
             if _pick(options, "clear_existing", False):
                 await self._clear_focused_field(selector is not None)
             await self._typer.type(text)
@@ -600,6 +502,7 @@ class Cursor:
             await self._end_action(was_random, 0, False)
 
     async def paste(self, value: str, selector: Optional[str] = None) -> None:
+        """Insert text at the current focus (paste semantics)."""
         was_random = self._start_action()
         try:
             if selector is not None:
@@ -611,130 +514,36 @@ class Cursor:
 
     # ---- scrolling ----
     async def scroll(self, selector: str, options: Optional[ScrollOptions] = None) -> None:
+        """Scroll an element into view with the wheel, honoring ``finish_position``."""
         was_random = self._start_action()
         try:
-            await self._move_along(
-                Vector(self._previous.x + self._rng() * 20 - 10, self._previous.y + self._rng() * 20 - 10),
-                MoveToOptions(move_delay=0, randomize_move_delay=False),
-                False,
-            )
-            wait_ms = _pick(options, "wait_for_selector", 10000)
-            if not await wait_for_element(self._driver, selector, "visible", wait_ms):
+            # Ensure the mouse is over the page so wheel events land.
+            here = self._actions.cursor
+            await self._glide(Vector(here.x + self._rng() * 20 - 10, here.y + self._rng() * 20 - 10))
+            if not await wait_for_element(self._driver, selector, _pick(options, "timeout", 10000)):
                 raise RuntimeError(f"myuri: element not found: {selector}")
-            finish_position = _pick(options, "finish_position", self._settings.scroll.finish_position)
-            plan = await self._compute_scroll_plan(selector, finish_position)
-            for _ in range(_pick(options, "max_tries", 3)):
-                if not plan or plan["inView"] or abs(plan["deltaY"]) < 1:
-                    break
-                await self._perform_scroll(plan, options)
-                plan = await self._compute_scroll_plan(selector, finish_position)
+            realism = _pick(options, "realism", None)
+            with self._tuned(
+                finish_position=_pick(options, "finish_position", self._settings.scroll.finish_position),
+                scroll_passes=_pick(options, "max_tries", 3),
+                speed_factor=_pick(options, "speed_factor", None),
+                speed_irregularity=_pick(realism, "speed_irregularity", None),
+            ):
+                await self._actions.run(self._actions.into_view(selector))
         finally:
             await self._end_action(was_random, 0, False)
 
-    async def _compute_scroll_plan(self, selector: str, finish_position: float) -> Optional[dict]:
-        """One planning pass; see ``scroll_plan.py`` for what it computes."""
-        return await self._driver.evaluate(
-            SCROLL_PLAN_FOR_SELECTOR,
-            {
-                "selector": selector,
-                "finishPosition": finish_position,
-                "pad": SCROLL_PAD,
-                "edge": SCROLL_EDGE,
-                "fromX": self._previous.x,
-                "fromY": self._previous.y,
-            },
-        )
-
-    async def _perform_scroll(self, plan: dict, options) -> None:
-        """Execute one planned pass: hover over the chosen scroller, wheel the delta."""
-        wanted = plan["deltaY"] * (self._scroll_multiplier or 1)
-        if abs(wanted) < 1:
-            return
-        # Hover over the chosen scroller so the wheel scrolls IT, not the page.
-        await self._move_along(
-            Vector(plan["hoverX"], plan["hoverY"]),
-            MoveToOptions(move_delay=0, randomize_move_delay=False),
-            False,
-        )
-        # Calibration reads window scroll, so only calibrate off page scrolls
-        # (the wheel→px DPR ratio is identical for containers).
-        pre = (await scroll_metrics_of(self._driver)).offset if plan["isPage"] else None
-        realism = _pick(options, "realism", None)
-        speed_irregularity = getattr(realism, "speed_irregularity", None) if realism else None
-        if speed_irregularity is None:
-            speed_irregularity = self._settings.scroll.realism.speed_irregularity
-        spec = WheelSpec(self._settings.scroll.device, self._settings.scroll.wheel, speed_irregularity)
-        # A wheel moves in whole notches, so calibrate against the planned total.
-        events, end, dispatched = wheel_with(wanted, self._rng, spec)
-        sf = _pick(options, "speed_factor", self._settings.scroll.speed_factor)
-
-        # Emit the gesture on the model's clock, like an input device: never wait
-        # for the page to acknowledge an event before sending the next. A browser
-        # acknowledges a wheel event only on its next frame (~16.7 ms at 60 Hz),
-        # so awaiting each one stretched gestures planned at ~8 ms cadence to
-        # 1.25-1.6x their intended duration. Events queued in the browser
-        # meanwhile are handled natively (Chromium coalesces them; Firefox
-        # delivers each), as they would be from real hardware. Tasks start in
-        # creation order and every driver sends over a single connection, so
-        # they arrive in order.
-        sent: List[asyncio.Future] = []
-
-        def failed() -> bool:  # e.g. the page closed mid-gesture
-            return any(s.done() and not s.cancelled() and s.exception() for s in sent)
-
-        start = time.monotonic() * 1000.0
-        for at, delta in events:
-            # An absolute schedule, so timer overshoot doesn't accumulate.
-            await _delay(start + at / sf - time.monotonic() * 1000.0)
-            if failed():
-                break
-            sent.append(asyncio.ensure_future(self._driver.wheel(0, delta)))
-        await _delay(start + end / sf - time.monotonic() * 1000.0)
-        # Everything must have landed (or failed) before measuring where the
-        # scroll ended; re-raise the first failure, having retrieved them all.
-        results = await asyncio.gather(*sent, return_exceptions=True)
-        errors = [r for r in results if isinstance(r, BaseException)]
-        if errors:
-            raise errors[0]
-
-        if pre is not None:
-            post = await self._settle_scroll(pre)
-            actual = post - pre
-            if self._scroll_multiplier is None and abs(dispatched) > 10 and abs(actual) > 10:
-                # Clamp: a first scroll truncated by maxScroll (or partially
-                # consumed by an inner scroller) would otherwise poison every
-                # subsequent scroll with a wildly inflated multiplier.
-                self._scroll_multiplier = min(3.0, max(0.3, round((dispatched / actual) * 100) / 100))
-        else:
-            await _delay(120)  # let the container settle (window-scroll settle doesn't apply)
-
-    async def _settle_scroll(self, previous_offset: float) -> float:
-        last = previous_offset
-        stable = 0
-        deadline = time.monotonic() + 0.6
-        while True:
-            await _delay(40)
-            cur = (await scroll_metrics_of(self._driver)).offset
-            if cur == last:
-                stable += 1
-                if stable >= 3 or time.monotonic() >= deadline:
-                    return cur
-            else:
-                stable = 0
-                last = cur
-            if time.monotonic() >= deadline:
-                return cur
-
     # ---- misc ----
     async def set_cursor_location(self, location: Vector) -> None:
+        """Teleport the cursor to a point without an animated path."""
         vp = await viewport_of(self._driver)
-        clamped = clamp_to_browser_bounds(location.x, location.y, vp)
-        pos = Vector(round(clamped.x), round(clamped.y))
-        await self._driver.move(pos.x, pos.y)
-        self._previous = pos
-        self._placed = True
+        x = min(max(round(location.x), 0), vp.width - 1)
+        y = min(max(round(location.y), 0), vp.height - 1)
+        await self._driver.move(x, y)
+        self._actions.moved(x, y)
 
     async def dispose(self) -> None:
+        """Release backend resources (CDP sessions, timers). Safe to call twice."""
         if self._disposed:
             return
         self._disposed = True

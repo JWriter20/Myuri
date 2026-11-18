@@ -7,7 +7,6 @@ import pytest
 
 from myuri import (
     Cursor,
-    Driver,
     make_rng,
     plan_click,
     plan_move,

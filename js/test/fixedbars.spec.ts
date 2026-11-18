@@ -180,7 +180,7 @@ describe.skipIf(!hasChromium)('fixed-bar obstruction (live browser)', () => {
     const { driver, moves } = recordingDriver(fromPlaywright(page))
     const cursor = createCursor({ driver, seed: 7, start: { x: 200, y: 200 } })
 
-    await expect(cursor.click('#unreachable', { waitForSelector: 500 })).rejects.toThrow(/myuri:/)
+    await expect(cursor.click('#unreachable', { timeout: 500 })).rejects.toThrow(/outside of the viewport or covered/)
     const bottomEdge = 600 - VIEWPORT_PADDING - 1
     expect(moves.every((m) => m.y < bottomEdge)).toBe(true)
     await page.close()
