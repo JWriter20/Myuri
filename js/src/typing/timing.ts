@@ -57,11 +57,12 @@ const CONTEXT = {
 } as const
 type Context = keyof typeof CONTEXT
 
-// Noise on log(gap): normal core plus, 8% of the time, a pause. Fitted to the
-// regression residual quantiles (1%..99%).
+// Noise on log(gap): normal core plus, 6% of the time, a pause. The fit to the
+// regression residual quantiles (1%..99%) gave 8% at mean 1.2; pauses are a little
+// rarer and shorter by default, because the fitted ones read as stalls on screen.
 const NOISE_SD = 0.48
-const PAUSE_PROB = 0.08
-const PAUSE_MEAN = 1.2
+const PAUSE_PROB = 0.06
+const PAUSE_MEAN = 1.0
 const PAUSE_SD = 0.5
 // Slow speed drift: AR(1) on log speed, stationary sd ~0.12.
 const DRIFT_RHO = 0.97

@@ -214,6 +214,23 @@ describe('KeystrokeTiming', () => {
     }
   })
 
+  it('pauses inside a word rarely, and briefly', () => {
+    const letter = (k: string) => /^[a-zA-Z]$/.test(k)
+    const gaps: number[] = []
+    for (let seed = 0; seed < 40; seed++) {
+      const strokes = strokesForText(longText)
+      const { downAt } = new KeystrokeTiming(80, makeRng(seed)).plan(strokes)
+      for (let i = 1; i < strokes.length; i++) {
+        const [a, b] = [strokes[i - 1].key, strokes[i].key]
+        if (letter(a) && letter(b) && b === b.toLowerCase()) gaps.push(downAt[i] - downAt[i - 1])
+      }
+    }
+    const share = (ms: number) => gaps.filter((g) => g > ms).length / gaps.length
+    expect(share(1000)).toBeGreaterThan(0)
+    expect(share(1000)).toBeLessThan(0.002)
+    expect(share(600)).toBeLessThan(0.008)
+  })
+
   it('types common English pairs faster than rare ones (FSU bigrams)', () => {
     const g = (a: string, b: string) => _internals.logGapMean({ key: a }, { key: b })
     expect(g('t', 'h')).toBeLessThan(g('t', 'k'))

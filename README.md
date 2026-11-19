@@ -151,6 +151,8 @@ hand it to `create_cursor(driver=...)`.
    - Common pairs are fast (`th` beats `tk`).
    - Same-finger and row jumps are slow.
    - Word starts, punctuation, digits and noticing a typo all pause.
+   - About one key in 17 waits longer, like a person hesitating. These pauses are a little
+     rarer and shorter than in the recordings, where they read as stalls.
    - Shift is pressed and released on its own.
    - About a third of keys overlap the next one (rollover), as in the recordings.
    - `wpm` sets the mean pace (5 characters per word).
