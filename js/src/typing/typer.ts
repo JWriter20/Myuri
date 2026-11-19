@@ -20,7 +20,7 @@
 import { MarkovTyper } from './markov.js'
 import type { TypingEvent } from './markov.js'
 import { DEFAULT_WPM, WPM_STD } from './config.js'
-import { KeystrokeTiming, charToStroke, type KeyAction, type Stroke } from './timing.js'
+import { KeystrokeTiming, charToStroke, type KeyAction, type Pauses, type Stroke } from './timing.js'
 import { gaussian, defaultRng } from '../rng.js'
 import type { Rng } from '../rng.js'
 
@@ -55,8 +55,8 @@ export const realClock: TypingClock = {
 export interface HumanTyperOptions {
   wpm?: number
   mistakeMultiplier?: number
-  /** @deprecated Ignored since 3.1: holds are drawn per key from recorded typing. */
-  keyDelay?: { min: number; max: number }
+  /** See `settings.typing.pauses`. */
+  pauses?: Pauses
   /** Called at each character's keydown with the gap since the previous keydown. */
   onCharacter?: (char: string, delayMs: number) => void
   onMistake?: (info: { typedChar: string }) => void
@@ -130,7 +130,7 @@ export class HumanTyper {
     this.rng = options?.rng ?? defaultRng
     this.clock = options?.clock ?? realClock
     this.sessionWpm = drawSessionWpm(this.rng, this.wpm)
-    this.timing = new KeystrokeTiming(this.sessionWpm, this.rng)
+    this.timing = new KeystrokeTiming(this.sessionWpm, this.rng, options?.pauses)
   }
 
   /** Type text with human-like timing, errors, and corrections. */

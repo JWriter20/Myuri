@@ -36,7 +36,7 @@ import math
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 
 from .geometry import get_random_box_point, should_overshoot
-from .page_functions import HIT_TEST_JS, SCROLL_EDGE, SCROLL_FINISH_POSITION, SCROLL_PAD, SCROLL_PLAN_JS
+from .page_functions import HIT_TEST_JS, SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_JS
 from .plan import CLICK_RUN_MS, WheelSpec, move_with, plan_click, plan_point, plan_press, plan_type, wheel_steps, wheel_style_for
 from .rng import Rng
 from .settings import MyuriSettings, resolve_settings
@@ -192,7 +192,6 @@ class Actions:
         os: Optional[str] = None,
         settings: Union[MyuriSettings, Dict[str, Any], None] = None,
         device: Optional[str] = None,
-        wpm: Optional[float] = None,
         asynchronous: bool = False,
         parts: Optional[Mapping[str, Callable[..., Any]]] = None,
     ) -> None:
@@ -209,13 +208,14 @@ class Actions:
         self.os = os
         self.settings = settings
         self.device = device or settings.scroll.device
-        self.wpm = settings.typing.wpm if wpm is None else wpm
         self.asynchronous = asynchronous
         self.parts: Dict[str, Callable[..., Any]] = dict(parts or {})
-        self.move_speed: Optional[float] = None
+        self.move_speed: float = settings.mouse.speed_factor
         self.overshoot_threshold: float = settings.overshoot.threshold
         self.hold_ms: Optional[float] = None
-        self.finish_position: float = SCROLL_FINISH_POSITION
+        self.finish_position: float = settings.scroll.finish_position
+        self.speed_factor: float = settings.scroll.speed_factor
+        self.speed_irregularity: float = settings.scroll.realism.speed_irregularity
         self.scroll_passes: int = SCROLL_PASSES
         # Where the cursor is, in page px; None until known. Before the first
         # move it is only where the person's hand is taken to be.
@@ -472,17 +472,21 @@ class Actions:
             last = plan
         return None
 
+    def _wheel_spec(self) -> WheelSpec:
+        """How the wheel turns for the scroll under way."""
+        return WheelSpec(self.device, self.settings.scroll.wheel, self.speed_irregularity, self.speed_factor)
+
     def _default_wheel(self, dx: float, dy: float) -> Flow:
-        s = self.settings.scroll
-        spec = WheelSpec(self.device, s.wheel, s.realism.speed_irregularity)
-        return (yield from self.play(wheel_steps(dx, dy, self.rng, os=self.os, spec=spec)))
+        return (yield from self.play(wheel_steps(dx, dy, self.rng, os=self.os, spec=self._wheel_spec())))
 
     def _default_type(self, text: str) -> Flow:
-        steps = plan_type(text, self.rng, os=self.os, wpm=self.wpm, mistake_multiplier=self.settings.typing.mistake_multiplier)
+        t = self.settings.typing
+        steps = plan_type(text, self.rng, os=self.os, wpm=t.wpm, mistake_multiplier=t.mistake_multiplier, pauses=t.pauses)
         return (yield from self.play(_key_steps(steps)))
 
     def _default_key(self, key: str) -> Flow:
-        return (yield from self.play(_key_steps(plan_press(key, self.rng, os=self.os, wpm=self.wpm))))
+        t = self.settings.typing
+        return (yield from self.play(_key_steps(plan_press(key, self.rng, os=self.os, wpm=t.wpm, pauses=t.pauses))))
 
 
 __all__ = ["Actions", "Host", "LANDING_MS", "Missed", "PARTS", "RETRY_MS", "SCROLL_PASSES", "run_async", "run_sync", "validate_steps"]

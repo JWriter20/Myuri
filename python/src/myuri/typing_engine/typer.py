@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Protocol, Tuple
 
 from ..rng import gaussian
+from ..settings import TypingPauses
 from .config import DEFAULT_WPM, WPM_STD
 from .markov import MarkovTyper, TypingEvent
 from .timing import KeyAction, KeystrokeTiming, Stroke, char_to_stroke
@@ -120,6 +121,7 @@ class HumanTyper:
         *,
         wpm: float = DEFAULT_WPM,
         mistake_multiplier: float = 1.0,
+        pauses: Optional[TypingPauses] = None,
         rng: Optional[Rng] = None,
         on_character: Optional[Callable[[str, float], None]] = None,
         on_mistake: Optional[Callable[[str], None]] = None,
@@ -137,7 +139,7 @@ class HumanTyper:
         # Per-session typing speed, sampled ONCE so every field this typer
         # fills shares one natural speed.
         self._session_wpm = draw_session_wpm(self._rng, self._wpm)
-        self._timing = KeystrokeTiming(self._session_wpm, self._rng)
+        self._timing = KeystrokeTiming(self._session_wpm, self._rng, pauses)
 
     async def type(self, text: str) -> None:
         """Type text with human-like timing, errors, and corrections."""

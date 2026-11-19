@@ -16,10 +16,9 @@ from .motion.click_model import drag_carry_speed, drag_end_ms, drag_start_ms, pr
 from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import bounding_box_of, scroll_offset_of, viewport_of, wait_for_element
 from .page_functions import FOCUSED_FIELD_JS, on_selector
-from .plan import WheelSpec, wheel_steps, wheel_style_for
+from .plan import wheel_steps
 from .profile import profile_from_seed
 from .rng import Rng, generate_random_seed, make_rng
-from .settings import resolve_settings
 from .target_os import primary_modifier
 from .types import BoundingBox, Vector, point_in_box
 from .typing_engine.typer import HumanTyper
@@ -110,8 +109,6 @@ class _CursorActions(Actions):
         # Padding and boxes to avoid when choosing a point, for the action under way.
         self.box_options: Optional[MoveOptions] = None
         self.exclude: List[BoundingBox] = []
-        self.speed_factor: float = self.settings.scroll.speed_factor
-        self.speed_irregularity: float = self.settings.scroll.realism.speed_irregularity
         # Wheel px per page px, calibrated on the first page scroll (drivers and DPRs scale a delta).
         self._scroll_multiplier: Optional[float] = None
 
@@ -132,9 +129,7 @@ class _CursorActions(Actions):
     def _default_wheel(self, dx: float, dy: float) -> Flow:
         host = self.host
         m = self._scroll_multiplier or 1
-        s = self.settings.scroll
-        spec = WheelSpec(self.device, s.wheel, self.speed_irregularity)
-        steps = [(*step[:-1], step[-1] / self.speed_factor) for step in wheel_steps(dx * m, dy * m, self.rng, os=self.os, spec=spec)]
+        steps = wheel_steps(dx * m, dy * m, self.rng, os=self.os, spec=self._wheel_spec())
         dispatched = sum(step[2] for step in steps if step[0] == "wheel")
         pre = yield scroll_offset_of(host.driver)
         yield from self.play(steps)
@@ -210,16 +205,7 @@ class Cursor:
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
         self._rng = make_rng(self._seed)
-        # An explicit ``settings`` override always wins. Otherwise, a seed
-        # derives a stable behavioral profile, so the same seed yields the same
-        # "personality".
-        if settings is not None:
-            resolved = resolve_settings(settings)
-        elif seed is not None:
-            resolved = profile_from_seed(self._seed)
-        else:
-            resolved = resolve_settings(None)
-        resolved.scroll.wheel.style = wheel_style_for(os, settings)
+        resolved = profile_from_seed(self._seed, settings, os)
         self._actions = _CursorActions(_DriverHost(driver), self._rng, os=os, settings=resolved)
         self._settings = self._actions.settings
         self._defaults = defaults or {}
@@ -237,6 +223,7 @@ class Cursor:
             _DriverTyperInput(driver),
             wpm=self._settings.typing.wpm,
             mistake_multiplier=self._settings.typing.mistake_multiplier,
+            pauses=self._settings.typing.pauses,
             rng=self._rng,
         )
         if perform_random_moves_initially:
@@ -403,7 +390,7 @@ class Cursor:
                 else:
                     target = to
                 # Carrying something, people move slower and steer straight to the drop: no overshoot.
-                await self._glide(target, (opts.move_speed or 1) * drag_carry_speed(self._rng))
+                await self._glide(target, (opts.move_speed or self._actions.move_speed) * drag_carry_speed(self._rng))
                 await _delay(drag_end_ms(self._rng) - self._actions.since_move)
                 released = True
                 await self._driver.mouse_up(button)

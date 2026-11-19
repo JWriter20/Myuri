@@ -216,7 +216,7 @@ async def test_scroll_keeps_model_timing_when_wheel_acks_take_a_frame(monkeypatc
 
     monkeypatch.setattr(scroll_model, "generate_scroll_path", record)
     d = SlowWheelDriver()
-    cursor = Cursor(d, seed=8, settings={"scroll": {"speed_factor": 1}})
+    cursor = Cursor(d, seed=8, settings={"variation": 0})
     await cursor.scroll("#target", ScrollOptions(max_tries=1))
 
     planned = gestures[0]
@@ -242,7 +242,7 @@ async def test_scroll_uses_the_profile_speed_factor(monkeypatch):
 
     monkeypatch.setattr(scroll_model, "generate_scroll_path", record)
     d = SlowWheelDriver()
-    cursor = Cursor(d, seed=3)  # profile speed_factor ~0.81
+    cursor = Cursor(d, seed=9999)  # profile speed_factor 0.8
     speed_factor = cursor.get_settings().scroll.speed_factor
     assert abs(speed_factor - 1) > 0.1
     await cursor.scroll("#target", ScrollOptions(max_tries=1))

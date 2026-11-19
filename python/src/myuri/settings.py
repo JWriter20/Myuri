@@ -21,10 +21,17 @@ class OvershootDwell:
 
 
 @dataclass
-class OvershootSettings:
-    """How far moves overshoot the target and how the correction behaves."""
+class MouseSettings:
+    """``speed_factor``: move speed (2 = moves take half as long). A call's ``move_speed`` replaces it."""
 
-    spread: float = 10
+    speed_factor: float = 1.0
+
+
+@dataclass
+class OvershootSettings:
+    """Moves longer than ``threshold`` px overshoot by up to ``radius`` px, pause
+    ``dwell``, and correct back at ``correction_speed_factor`` times the move's speed."""
+
     radius: float = 120
     threshold: float = 500
     correction_speed_factor: float = 1
@@ -53,17 +60,17 @@ class WheelSettings:
 
 @dataclass
 class ScrollSettings:
-    """Scroll pacing, overshoot, and finish position.
+    """Scroll pacing and where a scroll leaves the element.
 
-    ``device`` is what the identity scrolls with: ``"trackpad"`` (default)
+    ``speed_factor`` 2 makes each scroll and the pause between strokes take
+    half as long. ``finish_position`` is where the element ends up in the
+    viewport: 0 top, 0.5 middle, 1 bottom. ``device`` is what the identity scrolls with: ``"trackpad"`` (default)
     sends a stream of small pixel deltas, ``"mouse"`` turns a wheel in notches
     (see ``wheel``). Camoufox turns every wheel call into notches, so use
     ``"mouse"`` there.
     """
 
-    delay: float = 50
     speed_factor: float = 1.0
-    overshoot: float = 30
     finish_position: float = 0.5
     realism: ScrollRealism = field(default_factory=ScrollRealism)
     device: str = "trackpad"
@@ -71,17 +78,35 @@ class ScrollSettings:
 
 
 @dataclass
+class TypingPauses:
+    """Hesitations between keys: ``rate`` scales how often one happens, ``length`` how much time it adds."""
+
+    rate: float = 1.0
+    length: float = 1.0
+
+
+@dataclass
 class TypingSettings:
-    """Typing speed and mistake frequency."""
+    """Words per minute (with the default pauses), how often typos happen
+    (``mistake_multiplier``: 0 never, 2 twice as often), and the pauses. ``wpm``
+    counts the default pauses, so fewer or shorter pauses type a little faster."""
 
     wpm: float = 80
     mistake_multiplier: float = 1.0
+    pauses: TypingPauses = field(default_factory=TypingPauses)
 
 
 @dataclass
 class MyuriSettings:
-    """Top-level behavioral settings for a Cursor instance."""
+    """Top-level behavioral settings for a Cursor instance.
 
+    ``variation`` is how far each trait of a seed's profile may stray from these
+    settings: a trait is drawn within ±``variation`` of its value (0.2 = ±20%);
+    0 runs the settings exactly. See :func:`myuri.profile_from_seed`.
+    """
+
+    variation: float = 0.2
+    mouse: MouseSettings = field(default_factory=MouseSettings)
     overshoot: OvershootSettings = field(default_factory=OvershootSettings)
     scroll: ScrollSettings = field(default_factory=ScrollSettings)
     typing: TypingSettings = field(default_factory=TypingSettings)

@@ -17,6 +17,7 @@ class FakeHost:
     def __init__(self, plans=(IN_VIEW,), hits=(None,), latency=0):
         self.t = 0.0
         self.calls = []
+        self.args = []
         self.plans, self.hits, self.latency = list(plans), list(hits), latency
 
     @staticmethod
@@ -50,6 +51,7 @@ class FakeHost:
         self.calls.append(("insert_text", text, self.t))
 
     def evaluate(self, target, fn, arg):
+        self.args.append(arg)
         if fn == SCROLL_PLAN_JS:
             plan = self._next(self.plans)
             return None if plan is None else {k: dict(v) if isinstance(v, dict) else v for k, v in plan.items()}
@@ -196,3 +198,30 @@ def test_point_and_reaches_decide_where_to_press_and_whether_it_lands():
 def test_names_the_parts_when_one_is_unknown():
     with pytest.raises(TypeError, match="'scroll' is not a part; the parts are move, press"):
         actions(FakeHost(), parts={"scroll": lambda *_, **__: None})
+
+
+def _elapsed(settings, act):
+    total = 0.0
+    for seed in range(20):
+        host = FakeHost()
+        a = actions(host, seed, settings=settings)
+        a.moved(10, 20)
+        a.run(act(a))
+        total += host.t
+    return total / 20
+
+
+def test_moves_scrolls_and_types_at_the_speeds_in_settings():
+    move = lambda a: a.move(800, 450)  # noqa: E731
+    assert _elapsed({"mouse": {"speed_factor": 2}}, move) / _elapsed({}, move) == pytest.approx(0.5, abs=0.05)
+    wheel = lambda a: a.wheel(0, 900)  # noqa: E731
+    assert _elapsed({"scroll": {"speed_factor": 2}}, wheel) == pytest.approx(_elapsed({}, wheel) / 2)
+    type_ = lambda a: a.type("The quick brown fox jumps over the lazy dog.")  # noqa: E731
+    assert _elapsed({"typing": {"pauses": {"rate": 0}}}, type_) < _elapsed({}, type_)
+
+
+def test_scrolls_the_element_to_settings_scroll_finish_position():
+    host = FakeHost(plans=[BELOW, IN_VIEW])
+    a = actions(host, settings={"scroll": {"finish_position": 0.2}})
+    a.run(a.click("#t"))
+    assert any(arg and arg.get("finishPosition") == 0.2 for arg in host.args)

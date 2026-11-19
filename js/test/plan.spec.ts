@@ -194,3 +194,38 @@ describe('os', () => {
     expect(downs).toEqual(['Meta', 'v'])
   })
 })
+
+describe('settings', () => {
+  const SEEDS = Array.from({ length: 50 }, (_, i) => i)
+  const mean = (f: (seed: number) => number) => SEEDS.reduce((sum, seed) => sum + f(seed), 0) / SEEDS.length
+  const moveMs = (settings = {}, moveSpeed?: number) =>
+    mean((seed) => planMove({ x: 10, y: 20 }, { x: 800, y: 450 }, makeRng(seed), { moveSpeed, settings }).at(-1)!.t)
+  const wheelTimes = (settings = {}) => planWheel(0, 900, makeRng(13), { device: 'mouse', settings }).map((s) => s[s.length - 1] as number)
+  const typeMs = (pauses?: { rate: number; length: number }) =>
+    mean((seed) => planType('The quick brown fox jumps over the lazy dog.', makeRng(seed), { pauses }).at(-1)![0])
+
+  it('mouse.speedFactor 2 about halves a move, and a call’s moveSpeed replaces it', () => {
+    // Not exactly: the pointer still reports every ~10 ms.
+    expect(moveMs({ mouse: { speedFactor: 2 } }) / moveMs()).toBeCloseTo(0.5, 1)
+    expect(moveMs({ mouse: { speedFactor: 2 } }, 1)).toBe(moveMs())
+  })
+
+  it('scroll.speedFactor 2 halves every time in a scroll, the pause between strokes included', () => {
+    const fast = wheelTimes({ scroll: { speedFactor: 2 } })
+    wheelTimes().forEach((t, i) => expect(fast[i]).toBeCloseTo(t / 2, 6))
+  })
+
+  it('typing.pauses: fewer or shorter pauses type faster, more or longer ones slower', () => {
+    expect(typeMs({ rate: 1, length: 1 })).toBe(typeMs())
+    expect(typeMs({ rate: 0, length: 1 })).toBeLessThan(typeMs())
+    expect(typeMs({ rate: 1, length: 0 })).toBeLessThan(typeMs())
+    expect(typeMs({ rate: 3, length: 1 })).toBeGreaterThan(typeMs())
+    expect(typeMs({ rate: 1, length: 3 })).toBeGreaterThan(typeMs())
+  })
+
+  it('throws on a setting that does not exist', () => {
+    expect(() => planMove({ x: 0, y: 0 }, { x: 1, y: 1 }, makeRng(1), { settings: { mouse: { speed: 2 } } as never })).toThrow(
+      "myuri: unknown setting 'mouse.speed'",
+    )
+  })
+})

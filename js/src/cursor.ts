@@ -9,7 +9,7 @@ import { FOCUSED_FIELD_JS, onSelector } from './page-functions.js'
 import { Actions, type Host, type Step } from './actions.js'
 import { getRandomBoxPoint, getBetterStartingPosition, isPointExcluded } from './geometry.js'
 import { dragCarrySpeed, dragEndMs, dragStartMs, preClickDwellMs } from './motion/click-model.js'
-import { wheelStyleFor, wheelSteps } from './plan.js'
+import { wheelSteps } from './plan.js'
 import { primaryModifier, type Os } from './target-os.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type {
@@ -93,16 +93,8 @@ class DriverHost implements Host<string> {
 class CursorActions extends Actions<string> {
   /** Padding and boxes to avoid when choosing a point, for the action under way. */
   boxOptions: (BoxOptions & { exclude?: BoundingBox[] }) | undefined = undefined
-  speedFactor: number
-  speedIrregularity: number
   /** Wheel px per page px, calibrated on the first page scroll (drivers and DPRs scale a delta). */
   private scrollMultiplier: number | null = null
-
-  constructor(host: DriverHost, rng: Rng, options: ConstructorParameters<typeof Actions<string>>[2]) {
-    super(host, rng, options)
-    this.speedFactor = this.settings.scroll.speedFactor
-    this.speedIrregularity = this.settings.scroll.realism.speedIrregularity
-  }
 
   get sinceMove(): number {
     return this.host.now() - this.movedAt
@@ -120,13 +112,7 @@ class CursorActions extends Actions<string> {
   protected override async defaultWheel(dx: number, dy: number): Promise<void> {
     const host = this.host as DriverHost
     const m = this.scrollMultiplier ?? 1
-    const s = this.settings.scroll
-    const spec = { device: this.device, wheel: s.wheel, speedIrregularity: this.speedIrregularity }
-    const steps = wheelSteps(dx * m, dy * m, this.rng, this.os, spec).map((step) => {
-      const out = [...step] as Step
-      out[out.length - 1] = (step[step.length - 1] as number) / this.speedFactor
-      return out
-    })
+    const steps = wheelSteps(dx * m, dy * m, this.rng, this.os, this.wheelSpec())
     const dispatched = steps.reduce((sum, step) => sum + (step[0] === 'wheel' ? step[2] : 0), 0)
     const pre = await scrollOffsetOf(host.driver)
     await this.play(steps)
@@ -221,15 +207,7 @@ export class Cursor {
     this.driver = defineDriver(driver, { os: options.os })
     this.seed = (options.seed ?? generateRandomSeed()) >>> 0
     this.rng = makeRng(this.seed)
-    // An explicit `settings` override always wins. Otherwise, a seed derives a
-    // stable behavioral profile, so the same seed yields the same "personality".
-    const settings =
-      options.settings !== undefined
-        ? resolveSettings(options.settings)
-        : options.seed !== undefined
-          ? generateProfile(this.seed)
-          : resolveSettings()
-    settings.scroll.wheel.style = wheelStyleFor(options.os, options.settings)
+    const settings = generateProfile(this.seed, options.settings, options.os)
     this.actions = new CursorActions(new DriverHost(this.driver), this.rng, { os: options.os, settings })
     this.settings = this.actions.settings
     this.defaults = options.defaults ?? {}
@@ -244,6 +222,7 @@ export class Cursor {
     this.typer = new HumanTyper(typerInput, {
       wpm: this.settings.typing.wpm,
       mistakeMultiplier: this.settings.typing.mistakeMultiplier,
+      pauses: this.settings.typing.pauses,
       rng: this.rng,
     })
 
@@ -456,7 +435,7 @@ export class Cursor {
           target = to
         }
         // Carrying something, people move slower and steer straight to the drop: no overshoot.
-        await this.glide(target, (opts.moveSpeed ?? 1) * dragCarrySpeed(this.rng))
+        await this.glide(target, (opts.moveSpeed ?? this.actions.moveSpeed) * dragCarrySpeed(this.rng))
         await delay(dragEndMs(this.rng) - this.actions.sinceMove)
         released = true
         await this.driver.mouseUp(button)

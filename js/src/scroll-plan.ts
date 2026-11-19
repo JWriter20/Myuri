@@ -24,8 +24,6 @@ export interface ScrollPlan {
   borders: [number, number]
 }
 
-/** Where the scroll planner puts the target: 0 top, 0.5 middle, 1 bottom of the clear band. */
-export const SCROLL_FINISH_POSITION = 0.5
 /** Top and bottom margin (px) of the band the target is scrolled into. */
 export const SCROLL_PAD = Math.max(20, VIEWPORT_PADDING + 5)
 /** Left and right margin (px) of the region the cursor may land in. */

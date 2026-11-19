@@ -269,6 +269,12 @@ export function meanGapForWpm(wpm: number): number {
   return 12000 / wpm
 }
 
+/** How often a pause between keys happens and how much time it adds, relative to the recorded typists. */
+export interface Pauses {
+  rate: number
+  length: number
+}
+
 /**
  * Stateful keystroke timing for one typing session. Keep one per typist so the
  * speed drift and hold style carry over between fields.
@@ -278,9 +284,11 @@ export class KeystrokeTiming {
   private scale: number
   private holdFactor: number
   private drift = 0
+  private pauses: Pauses
 
-  constructor(wpm: number, rng: Rng) {
+  constructor(wpm: number, rng: Rng, pauses: Pauses = { rate: 1, length: 1 }) {
     this.rng = rng
+    this.pauses = pauses
     this.scale = meanGapForWpm(wpm) / REFERENCE_MEAN_GAP_MS
     this.holdFactor = Math.exp(gaussian(rng, 0, SESSION_HOLD_SD))
   }
@@ -293,9 +301,11 @@ export class KeystrokeTiming {
   /** One sampled keydown-to-keydown gap, ms. */
   gap(prev: Stroke, cur: Stroke): number {
     this.drift = DRIFT_RHO * this.drift + gaussian(this.rng, 0, DRIFT_STEP_SD)
-    let noise = gaussian(this.rng, 0, NOISE_SD)
-    if (this.rng() < PAUSE_PROB) noise += Math.max(0, gaussian(this.rng, PAUSE_MEAN, PAUSE_SD))
-    const ms = this.scale * Math.exp(logGapMean(prev, cur) + noise + this.drift)
+    const noise = gaussian(this.rng, 0, NOISE_SD)
+    let ms = this.scale * Math.exp(logGapMean(prev, cur) + noise + this.drift)
+    if (this.rng() < PAUSE_PROB * this.pauses.rate) {
+      ms *= 1 + this.pauses.length * (Math.exp(Math.max(0, gaussian(this.rng, PAUSE_MEAN, PAUSE_SD))) - 1)
+    }
     return Math.min(MAX_GAP_MS, Math.max(MIN_GAP_MS, ms))
   }
 

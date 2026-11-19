@@ -18,6 +18,7 @@ from myuri import (
     primary_modifier,
 )
 from myuri.options import MoveToOptions
+from myuri.settings import TypingPauses
 from myuri.types import BoundingBox, Vector
 from myuri.drivers.base import define_driver
 
@@ -198,3 +199,46 @@ def test_pastes_with_the_modifier_of_os_not_the_page_one():
     driver.os = "macos"
     asyncio.run(driver.insert_text("é"))
     assert downs == ["Meta", "v"]
+
+
+_SEEDS = range(50)
+_FOX = "The quick brown fox jumps over the lazy dog."
+
+
+def _mean(f):
+    return sum(f(seed) for seed in _SEEDS) / len(_SEEDS)
+
+
+def _move_ms(settings=None, move_speed=None):
+    return _mean(lambda seed: plan_move(Vector(10, 20), Vector(800, 450), make_rng(seed), move_speed=move_speed, settings=settings)[-1].t)
+
+
+def _wheel_times(settings=None):
+    return [s[-1] for s in plan_wheel(0, 900, make_rng(13), device="mouse", settings=settings)]
+
+
+def _type_ms(pauses=None):
+    return _mean(lambda seed: plan_type(_FOX, make_rng(seed), pauses=pauses)[-1][0])
+
+
+def test_mouse_speed_factor_about_halves_a_move_and_a_calls_move_speed_replaces_it():
+    # Not exactly: the pointer still reports every ~10 ms.
+    assert _move_ms({"mouse": {"speed_factor": 2}}) / _move_ms() == pytest.approx(0.5, abs=0.05)
+    assert _move_ms({"mouse": {"speed_factor": 2}}, 1) == _move_ms()
+
+
+def test_scroll_speed_factor_halves_every_time_in_a_scroll():
+    assert _wheel_times({"scroll": {"speed_factor": 2}}) == pytest.approx([t / 2 for t in _wheel_times()])
+
+
+def test_typing_pauses_fewer_or_shorter_type_faster_more_or_longer_slower():
+    assert _type_ms(TypingPauses(1, 1)) == _type_ms()
+    assert _type_ms(TypingPauses(0, 1)) < _type_ms()
+    assert _type_ms(TypingPauses(1, 0)) < _type_ms()
+    assert _type_ms(TypingPauses(3, 1)) > _type_ms()
+    assert _type_ms(TypingPauses(1, 3)) > _type_ms()
+
+
+def test_throws_on_a_setting_that_does_not_exist():
+    with pytest.raises(KeyError, match="unknown settings key 'speed'"):
+        plan_move(Vector(0, 0), Vector(1, 1), make_rng(1), settings={"mouse": {"speed": 2}})

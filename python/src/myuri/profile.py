@@ -1,88 +1,49 @@
 """Seed -> behavioral profile (mirror of ``js/src/profile.ts``).
 
-A Cursor's ``seed`` already makes the per-action *motion stream* reproducible.
-:func:`profile_from_seed` goes one step further: it derives a stable set of
-behavioral traits — a *behavioral fingerprint* — from the same seed. Two
-cursors built from the same seed therefore share not just identical motion but
-the same "personality": typing speed, mistake rate, overshoot aggressiveness,
-scroll pacing.
+A Cursor's ``seed`` makes the motion stream reproducible;
+:func:`profile_from_seed` also draws a stable set of traits from it, so two
+cursors built from the same seed type, move and scroll like the same person.
+Each trait is drawn around the configured value, within ±``variation`` of it.
 
-The draw order below is fixed and identical to the TypeScript package; because
-both use the same Mulberry32 PRNG and Box-Muller transform, a given seed yields
-byte-identical settings in either language.
+The draw order below is fixed and identical to the TypeScript package: both
+use the same Mulberry32 PRNG and Box-Muller transform, so a seed yields
+identical settings in either language.
 """
 from __future__ import annotations
 
-import math
+from typing import Any, Dict, Optional
 
-from .rng import Rng, gaussian, make_rng
+from .plan import wheel_style_for
+from .rng import gaussian, make_rng
 from .settings import MyuriSettings, resolve_settings
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return low if value < low else high if value > high else value
-
-
-def _round_half_up(value: float) -> int:
-    """Round half-up, matching JS ``Math.round`` (Python's ``round`` banker-rounds)."""
-    return math.floor(value + 0.5)
-
-
-def _draw(rng: Rng, mean: float, std: float, low: float, high: float) -> float:
-    """One Gaussian draw, clamped into ``[low, high]``."""
-    return _clamp(gaussian(rng, mean, std), low, high)
-
-
-def profile_from_seed(seed: int) -> MyuriSettings:
-    """Derive a full :class:`MyuriSettings` behavioral profile from a seed.
-
-    Same seed -> identical profile. Values are drawn around the defaults so a
-    random seed still yields plausible, human-range behavior; ``resolve_settings``
-    fills any field not drawn here.
-    """
+def profile_from_seed(seed: int, settings: Optional[Dict[str, Any]] = None, os: Optional[str] = None) -> MyuriSettings:
+    """The settings one person runs with: ``settings`` (merged onto the
+    defaults) with each trait scaled by a factor drawn from ``seed``, normal
+    around 1 with sd ``variation / 2``, clamped to 1 ± ``variation``. Same seed
+    and settings, same profile. The device, the wheel and ``variation`` itself
+    are not drawn; the wheel style is the ``os``'s unless ``settings`` name one."""
+    p = resolve_settings(settings)
+    p.scroll.wheel.style = wheel_style_for(os, settings)
     rng = make_rng(int(seed) & 0xFFFFFFFF)
+    v = p.variation
 
-    # Typing.
-    wpm = _round_half_up(_draw(rng, 80, 18, 35, 130))
-    mistake_multiplier = _draw(rng, 1.0, 0.35, 0.4, 2.0)
-    # Layout knob removed (always qwerty); still burn its old draw so
-    # seed→profile streams stay stable.
-    rng()
+    def vary(x: float) -> float:
+        return x * min(1 + v, max(1 - v, gaussian(rng, 1, v / 2)))
 
-    # Scroll dynamics.
-    scroll_speed_factor = _draw(rng, 1.0, 0.16, 0.75, 1.4)
-    scroll_delay = _round_half_up(_draw(rng, 50, 12, 25, 90))
-    scroll_overshoot = _round_half_up(_draw(rng, 30, 10, 8, 60))
-    scroll_finish_position = _draw(rng, 0.5, 0.08, 0.3, 0.7)
-    scroll_irregularity = _draw(rng, 0.08, 0.03, 0.02, 0.18)
-
-    # Overshoot / correction geometry.
-    overshoot_spread = _draw(rng, 10, 3, 4, 20)
-    overshoot_radius = _draw(rng, 120, 30, 60, 200)
-    overshoot_threshold = _round_half_up(_draw(rng, 500, 100, 300, 800))
-    correction_speed_factor = _draw(rng, 1.0, 0.15, 0.7, 1.4)
-    dwell_min = _round_half_up(_draw(rng, 20, 6, 5, 40))
-    dwell_max = dwell_min + _round_half_up(_draw(rng, 40, 12, 15, 80))
-
-    return resolve_settings(
-        {
-            "overshoot": {
-                "spread": overshoot_spread,
-                "radius": overshoot_radius,
-                "threshold": overshoot_threshold,
-                "correction_speed_factor": correction_speed_factor,
-                "dwell": {"min_ms": dwell_min, "max_ms": dwell_max},
-            },
-            "scroll": {
-                "delay": scroll_delay,
-                "speed_factor": scroll_speed_factor,
-                "overshoot": scroll_overshoot,
-                "finish_position": scroll_finish_position,
-                "realism": {"speed_irregularity": scroll_irregularity},
-            },
-            "typing": {
-                "wpm": wpm,
-                "mistake_multiplier": mistake_multiplier,
-            },
-        }
-    )
+    p.mouse.speed_factor = vary(p.mouse.speed_factor)
+    p.overshoot.radius = vary(p.overshoot.radius)
+    p.overshoot.threshold = vary(p.overshoot.threshold)
+    p.overshoot.correction_speed_factor = vary(p.overshoot.correction_speed_factor)
+    p.overshoot.dwell.min_ms = vary(p.overshoot.dwell.min_ms)
+    p.overshoot.dwell.max_ms = vary(p.overshoot.dwell.max_ms)
+    p.scroll.speed_factor = vary(p.scroll.speed_factor)
+    # Past 1 the element would end below the viewport.
+    p.scroll.finish_position = min(1.0, vary(p.scroll.finish_position))
+    p.scroll.realism.speed_irregularity = vary(p.scroll.realism.speed_irregularity)
+    p.typing.wpm = vary(p.typing.wpm)
+    p.typing.mistake_multiplier = vary(p.typing.mistake_multiplier)
+    p.typing.pauses.rate = vary(p.typing.pauses.rate)
+    p.typing.pauses.length = vary(p.typing.pauses.length)
+    return p

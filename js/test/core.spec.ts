@@ -34,8 +34,8 @@ describe('rng', () => {
 describe('settings', () => {
   it('returns a fully-owned deep copy (no shared nested refs)', () => {
     const s = resolveSettings()
-    s.scroll.delay = 9999
-    expect(defaultSettings.scroll.delay).not.toBe(9999)
+    s.scroll.realism.speedIrregularity = 9999
+    expect(defaultSettings.scroll.realism.speedIrregularity).not.toBe(9999)
   })
 
   it('deep-merges overrides without mutating defaults', () => {

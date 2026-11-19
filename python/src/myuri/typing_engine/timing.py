@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from ..rng import gaussian
+from ..settings import TypingPauses
 from .bigrams import BIGRAM_MEAN_LOG10, BIGRAM_TABLE_B64
 
 Rng = Callable[[], float]
@@ -249,8 +250,9 @@ def mean_gap_for_wpm(wpm: float) -> float:
 class KeystrokeTiming:
     """Stateful keystroke timing for one typing session (keep one per typist)."""
 
-    def __init__(self, wpm: float, rng: Rng) -> None:
+    def __init__(self, wpm: float, rng: Rng, pauses: Optional[TypingPauses] = None) -> None:
         self._rng = rng
+        self._pauses = pauses or TypingPauses()
         self._scale = mean_gap_for_wpm(wpm) / REFERENCE_MEAN_GAP_MS
         self._hold_factor = math.exp(gaussian(rng, 0, SESSION_HOLD_SD))
         self._drift = 0.0
@@ -262,9 +264,9 @@ class KeystrokeTiming:
         """One sampled keydown-to-keydown gap, ms."""
         self._drift = DRIFT_RHO * self._drift + gaussian(self._rng, 0, DRIFT_STEP_SD)
         noise = gaussian(self._rng, 0, NOISE_SD)
-        if self._rng() < PAUSE_PROB:
-            noise += max(0.0, gaussian(self._rng, PAUSE_MEAN, PAUSE_SD))
         ms = self._scale * math.exp(log_gap_mean(prev, cur) + noise + self._drift)
+        if self._rng() < PAUSE_PROB * self._pauses.rate:
+            ms *= 1 + self._pauses.length * (math.exp(max(0.0, gaussian(self._rng, PAUSE_MEAN, PAUSE_SD))) - 1)
         return min(MAX_GAP_MS, max(MIN_GAP_MS, ms))
 
     def hold(self, key: str) -> float:

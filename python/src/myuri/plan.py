@@ -25,7 +25,7 @@ from .motion.wheel_model import generate_wheel_path
 from .options import PathOptions
 from .target_os import check_os, primary_modifier
 from .rng import Rng, gaussian
-from .settings import OvershootSettings, WheelSettings, resolve_settings
+from .settings import OvershootSettings, TypingPauses, WheelSettings, resolve_settings
 from .types import BoundingBox, Vector, overshoot as overshoot_point, point_in_box
 from .typing_engine.config import DEFAULT_WPM
 from .typing_engine.timing import KeyAction, KeystrokeTiming, needs_shift
@@ -74,9 +74,12 @@ def plan_move(
     (past ``end`` and back) defaults to whether the move is longer than
     ``settings.overshoot.threshold``."""
     check_os(os)
-    o = resolve_settings(settings).overshoot
+    s = resolve_settings(settings)
+    o = s.overshoot
     if overshoot is None:
         overshoot = should_overshoot(start, end, o.threshold)
+    if move_speed is None:
+        move_speed = s.mouse.speed_factor
     return move_with(start, end, rng, move_speed=move_speed, overshoot=overshoot, settings=o, settle=lambda p: p)
 
 
@@ -150,9 +153,9 @@ def _steps(actions: List[KeyAction]) -> List[KeyStep]:
     return [(a.at, a.type, a.key) for a in actions]
 
 
-def _session(rng: Rng, os: Optional[str], wpm: Optional[float]) -> KeystrokeTiming:
+def _session(rng: Rng, os: Optional[str], wpm: Optional[float], pauses: Optional[TypingPauses]) -> KeystrokeTiming:
     check_os(os)
-    return KeystrokeTiming(draw_session_wpm(rng, DEFAULT_WPM if wpm is None else wpm), rng)
+    return KeystrokeTiming(draw_session_wpm(rng, DEFAULT_WPM if wpm is None else wpm), rng, pauses)
 
 
 def plan_type(
@@ -162,16 +165,19 @@ def plan_type(
     os: Optional[str] = None,
     wpm: Optional[float] = None,
     mistake_multiplier: Optional[float] = None,
+    pauses: Optional[TypingPauses] = None,
 ) -> List[KeyStep]:
     """Typing ``text``, with the typos and corrections a person makes, around
-    ``wpm`` words per minute. Keys are Playwright key names; Shift is pressed
-    and released as its own key."""
-    timing = _session(rng, os, wpm)
+    ``wpm`` words per minute (``pauses``: see ``settings.typing.pauses``). Keys
+    are Playwright key names; Shift is pressed and released as its own key."""
+    timing = _session(rng, os, wpm, pauses)
     _, actions, _ = plan_typing(text, 1 if mistake_multiplier is None else mistake_multiplier, rng, timing)
     return _steps(actions)
 
 
-def plan_press(key: str, rng: Rng, *, os: Optional[str] = None, wpm: Optional[float] = None) -> List[KeyStep]:
+def plan_press(
+    key: str, rng: Rng, *, os: Optional[str] = None, wpm: Optional[float] = None, pauses: Optional[TypingPauses] = None
+) -> List[KeyStep]:
     """One key or chord in Playwright's notation ('Enter', 'Control+a',
     'Meta+Shift+z', 'A'). A key that needs Shift gets it."""
     parts = key.split("+")
@@ -180,7 +186,7 @@ def plan_press(key: str, rng: Rng, *, os: Optional[str] = None, wpm: Optional[fl
     modifiers = parts[:-2] if key.endswith("+") else parts
     if needs_shift(main) and "Shift" not in modifiers:
         modifiers.append("Shift")
-    return _steps(_session(rng, os, wpm).plan_chord(modifiers, main))
+    return _steps(_session(rng, os, wpm, pauses).plan_chord(modifiers, main))
 
 
 def plan_select_all(rng: Rng, *, os: str, wpm: Optional[float] = None) -> List[KeyStep]:
@@ -198,6 +204,8 @@ class WheelSpec:
     device: str
     wheel: WheelSettings
     speed_irregularity: float
+    # Divides every time in the scroll (see ``settings.scroll.speed_factor``).
+    speed_factor: float
 
 
 # Chromium ignores very small wheel deltas, so a trackpad's are sent in batches of at least this many px.
@@ -219,7 +227,7 @@ def wheel_with(distance: float, rng: Rng, spec: WheelSpec) -> Tuple[List[Tuple[f
     for ev in model:
         total += ev.delta_y
         raw.append((end, ev.delta_y))
-        end += ev.delta_time
+        end += ev.delta_time / spec.speed_factor
     if mouse:
         return raw, end, total
     events: List[Tuple[float, float]] = []
@@ -271,7 +279,7 @@ def plan_wheel(
     ``settings.scroll.device`` ('trackpad')."""
     s = resolve_settings(settings)
     s.scroll.wheel.style = wheel_style_for(os, settings)
-    spec = WheelSpec(device or s.scroll.device, s.scroll.wheel, s.scroll.realism.speed_irregularity)
+    spec = WheelSpec(device or s.scroll.device, s.scroll.wheel, s.scroll.realism.speed_irregularity, s.scroll.speed_factor)
     return wheel_steps(delta_x, delta_y, rng, os=os, spec=spec)
 
 
@@ -285,10 +293,10 @@ def wheel_steps(delta_x: float, delta_y: float, rng: Rng, *, os: Optional[str], 
         t = end
     if delta_x != 0:
         out.append(("key", "Shift", "down", t))
-        t += math.exp(gaussian(rng, *_SHIFT_WHEEL_LEAD))
+        t += math.exp(gaussian(rng, *_SHIFT_WHEEL_LEAD)) / spec.speed_factor
         events, _, _ = wheel_with(delta_x, rng, spec)
         out += [("wheel", d, 0, t + at) if os == "macos" else ("wheel", 0, d, t + at) for at, d in events]
-        t = out[-1][3] + math.exp(gaussian(rng, *_SHIFT_WHEEL_TRAIL))
+        t = out[-1][3] + math.exp(gaussian(rng, *_SHIFT_WHEEL_TRAIL)) / spec.speed_factor
         out.append(("key", "Shift", "up", t))
     return out
 

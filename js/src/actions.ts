@@ -29,9 +29,9 @@
 import { getRandomBoxPoint, shouldOvershoot } from './geometry.js'
 import type { BoundingBox, Vector } from './math.js'
 import { HIT_TEST_JS, type HitTestArgs } from './page-functions.js'
-import { CLICK_RUN_MS, type KeyStep, moveWith, planClick, planPoint, planPress, planType, wheelSteps, wheelStyleFor } from './plan.js'
+import { CLICK_RUN_MS, type KeyStep, moveWith, planClick, planPoint, planPress, planType, wheelSteps, wheelStyleFor, type WheelSpec } from './plan.js'
 import type { Rng } from './rng.js'
-import { SCROLL_EDGE, SCROLL_FINISH_POSITION, SCROLL_PAD, SCROLL_PLAN_JS, type ScrollPlan, type ScrollPlanArgs } from './scroll-plan.js'
+import { SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_JS, type ScrollPlan, type ScrollPlanArgs } from './scroll-plan.js'
 import { type DeepPartial, type MyuriSettings, resolveSettings } from './settings.js'
 import { checkOs, type Os } from './target-os.js'
 
@@ -117,8 +117,6 @@ export interface ActionsOptions<T> {
   settings?: DeepPartial<MyuriSettings>
   /** What the wheel is; defaults to `settings.scroll.device`. */
   device?: 'mouse' | 'trackpad'
-  /** Typing speed; defaults to `settings.typing.wpm`. */
-  wpm?: number
   parts?: Parts<T>
 }
 
@@ -187,7 +185,9 @@ const keySteps = (steps: KeyStep[]): Step[] =>
  * The tuning fields apply to the actions that follow: `moveSpeed` (a
  * multiplier), `overshootThreshold` (px; a longer move overshoots and
  * corrects), `holdMs` (a fixed hold for each press), `finishPosition` (where a
- * scroll leaves the element) and `scrollPasses`.
+ * scroll leaves the element), `speedFactor` and `speedIrregularity` (the
+ * scroll's) and `scrollPasses`. All but `holdMs` and `scrollPasses` start
+ * from `settings`.
  */
 export class Actions<T = unknown> {
   readonly host: Host<T>
@@ -195,12 +195,13 @@ export class Actions<T = unknown> {
   readonly os: Os | undefined
   readonly settings: MyuriSettings
   readonly device: 'mouse' | 'trackpad'
-  wpm: number
   readonly parts: Parts<T>
-  moveSpeed: number | undefined = undefined
+  moveSpeed: number
   overshootThreshold: number
   holdMs: number | undefined = undefined
-  finishPosition = SCROLL_FINISH_POSITION
+  finishPosition: number
+  speedFactor: number
+  speedIrregularity: number
   scrollPasses = SCROLL_PASSES
   /** Where the cursor is, in page px; null until known. Before the first move it is only where the person's hand is taken to be. */
   cursor: Vector | null = null
@@ -219,9 +220,12 @@ export class Actions<T = unknown> {
     this.os = options.os
     this.settings = settings
     this.device = options.device ?? settings.scroll.device
-    this.wpm = options.wpm ?? settings.typing.wpm
     this.parts = { ...options.parts }
+    this.moveSpeed = settings.mouse.speedFactor
     this.overshootThreshold = settings.overshoot.threshold
+    this.finishPosition = settings.scroll.finishPosition
+    this.speedFactor = settings.scroll.speedFactor
+    this.speedIrregularity = settings.scroll.realism.speedIrregularity
   }
 
   /** Record a move the host made outside these actions. */
@@ -461,18 +465,22 @@ export class Actions<T = unknown> {
     }
   }
 
+  /** How the wheel turns for the scroll under way. */
+  protected wheelSpec(): WheelSpec {
+    return { device: this.device, wheel: this.settings.scroll.wheel, speedIrregularity: this.speedIrregularity, speedFactor: this.speedFactor }
+  }
+
   protected async defaultWheel(dx: number, dy: number): Promise<void> {
-    const s = this.settings.scroll
-    const spec = { device: this.device, wheel: s.wheel, speedIrregularity: s.realism.speedIrregularity }
-    await this.play(wheelSteps(dx, dy, this.rng, this.os, spec))
+    await this.play(wheelSteps(dx, dy, this.rng, this.os, this.wheelSpec()))
   }
 
   protected async defaultType(text: string): Promise<void> {
-    const steps = planType(text, this.rng, { os: this.os, wpm: this.wpm, mistakeMultiplier: this.settings.typing.mistakeMultiplier })
+    const { wpm, mistakeMultiplier, pauses } = this.settings.typing
+    const steps = planType(text, this.rng, { os: this.os, wpm, mistakeMultiplier, pauses })
     await this.play(keySteps(steps))
   }
 
   protected async defaultKey(key: string): Promise<void> {
-    await this.play(keySteps(planPress(key, this.rng, { os: this.os, wpm: this.wpm })))
+    await this.play(keySteps(planPress(key, this.rng, { os: this.os, wpm: this.settings.typing.wpm, pauses: this.settings.typing.pauses })))
   }
 }

@@ -280,7 +280,7 @@ describe('Cursor (headless integration)', () => {
       },
     }
     try {
-      const cursor = createCursor({ driver, seed: 8, settings: { scroll: { speedFactor: 1 } } })
+      const cursor = createCursor({ driver, seed: 8, settings: { variation: 0 } })
       await cursor.scroll('#target', { maxTries: 1 })
     } finally {
       scrollModel.generateScrollPath = generate

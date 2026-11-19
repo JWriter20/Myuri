@@ -16,6 +16,7 @@ const below: ScrollPlan = { ...inView, inView: false, deltaY: 900, hoverX: 640, 
 class FakeHost implements Host<string> {
   t = 0
   calls: unknown[][] = []
+  args: unknown[] = []
   constructor(
     readonly plans: (ScrollPlan | null)[] = [inView],
     readonly hits: (string | null)[] = [null],
@@ -50,7 +51,8 @@ class FakeHost implements Host<string> {
   insertText(text: string) {
     this.calls.push(['insertText', text, this.t])
   }
-  evaluate<A, R>(_target: string, fn: (el: any, arg: A) => R): R {
+  evaluate<A, R>(_target: string, fn: (el: any, arg: A) => R, arg?: A): R {
+    this.args.push(arg)
     if (fn === (SCROLL_PLAN_JS as unknown)) return this.next(this.plans) as R
     if (fn === (HIT_TEST_JS as unknown)) return this.next(this.hits) as R
     throw new Error('unexpected page function')
@@ -197,5 +199,34 @@ describe('parts', () => {
 
   it('names the parts when one is unknown', () => {
     expect(() => actions(new FakeHost(), 1, { parts: { scroll: () => {} } })).toThrow(/'scroll' is not a part; the parts are move, press/)
+  })
+})
+
+describe('Actions settings', () => {
+  const elapsed = async (settings: object, act: (a: Actions<string>) => Promise<void>) => {
+    let sum = 0
+    for (let seed = 0; seed < 20; seed++) {
+      const host = new FakeHost()
+      const a = actions(host, seed, { settings })
+      a.moved(10, 20)
+      await act(a)
+      sum += host.t
+    }
+    return sum / 20
+  }
+
+  it('moves, scrolls and types at the speeds in settings', async () => {
+    const move = (a: Actions<string>) => a.move(800, 450)
+    expect((await elapsed({ mouse: { speedFactor: 2 } }, move)) / (await elapsed({}, move))).toBeCloseTo(0.5, 1)
+    const wheel = (a: Actions<string>) => a.wheel(0, 900)
+    expect(await elapsed({ scroll: { speedFactor: 2 } }, wheel)).toBeCloseTo((await elapsed({}, wheel)) / 2, 6)
+    const type = (a: Actions<string>) => a.type('The quick brown fox jumps over the lazy dog.')
+    expect(await elapsed({ typing: { pauses: { rate: 0 } } }, type)).toBeLessThan(await elapsed({}, type))
+  })
+
+  it('scrolls the element to settings.scroll.finishPosition', async () => {
+    const host = new FakeHost([below, inView])
+    await actions(host, 1, { settings: { scroll: { finishPosition: 0.2 } } }).click('#t')
+    expect(host.args).toContainEqual(expect.objectContaining({ finishPosition: 0.2 }))
   })
 })
