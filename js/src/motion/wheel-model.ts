@@ -20,23 +20,27 @@ import type { ScrollEvent } from './scroll-model.js'
  *    roll. A stroke starts at one line a frame and climbs to ~10, `pxPerLine`
  *    (default 16) each.
  *
- * `notched` is fitted from a notched USB mouse on Windows, Firefox, 411 wheel
- * events in 5 long scrolls, split into strokes at gaps over 40 ms (29 single
- * strokes of 4+ notches; robust lognormal fits, mu = ln median and
- * sd = ln(p90 / p10) / 2.563). Windows stamps events on its 15.625 ms timer
- * grid, so times are fitted with each stamp spread uniformly over its tick:
- *  - a stroke is lognormal(2.833, 0.27) notches (p10/50/90 11/17/22) over
- *    lognormal(5.064, 0.18) ms (121/158/192);
- *  - re-grip between strokes lognormal(4.258, 0.446) ms (45/71/141, 36 gaps);
+ * `notched` is fitted from a notched USB mouse on Windows, Firefox, scrolling
+ * to a target (finding a button, a box to accept, a product), split into
+ * strokes at gaps over 40 ms (21 strokes of 3+ notches, 26 re-grips; robust
+ * lognormal fits, mu = ln median and sd = ln(p90 / p10) / 2.563). Spinning the
+ * wheel on request gives strokes twice as long and re-grips half as long, and
+ * reading an article gives lone notches; neither is what a scroll to a target
+ * does. Windows stamps events on its 15.625 ms timer grid, so times are fitted
+ * with each stamp spread uniformly over its tick:
+ *  - a stroke is lognormal(2.079, 0.342) notches (p10/50/90 5/8/12) over
+ *    lognormal(4.828, 0.352) ms (62/125/153);
+ *  - re-grip between strokes lognormal(4.828, 0.727) ms (47/125/303);
  *  - the flick is fastest at the start and slows evenly to the end: notch i of
  *    n clicks at 1 - sqrt(1 - (i + 0.5) / n) of the stroke. In 60 Hz frames
- *    this gives 48/33/14/4% of events 1/2/3/4 notches and 6/8/10 events a
- *    stroke (recorded 41/41/14/4%, 7/9/11), front-loaded as recorded;
+ *    this gives 70/23/5% of events 1/2/3 notches and 3/6/8 events a stroke
+ *    (recorded 67/31/1%, 4/7/8);
  *  - a short stroke takes at most two frames a notch: recorded strokes of 2-10
  *    notches arrive about one notch a 15.6 ms tick;
+ *  - scrolls of 7-69 notches take 0.93x the planned median (recorded 0.17-1.9 s);
  *  - a scroll of up to 7 notches is nudged, not flicked: all 9 recorded opened
  *    with a lone notch, then strokes of 1-5 notches (median 2), re-gripping
- *    between them.
+ *    lognormal(4.258, 0.446) ms (45/71/141) between them.
  *
  * `macos` is fitted from a notched USB mouse on macOS, Firefox, 1666 wheel
  * events:
@@ -71,17 +75,19 @@ const REGRIP_MIN_MS = 50
 const REGRIP_MAX_MS = 600
 const LONE_NOTCH_PROBABILITY = 0.33
 
-const NOTCHES_MU = 2.833
-const NOTCHES_SD = 0.27
-const FLICK_MU = 5.064
-const FLICK_SD = 0.18
-const FLICK_REGRIP_MU = 4.258
-const FLICK_REGRIP_SD = 0.446
+const NOTCHES_MU = 2.079
+const NOTCHES_SD = 0.342
+const FLICK_MU = 4.828
+const FLICK_SD = 0.352
+const FLICK_REGRIP_MU = 4.828
+const FLICK_REGRIP_SD = 0.727
 const FRAME_MS = 1000 / 60
 const NOTCH_MAX_MS = 2 * FRAME_MS
 const NUDGE_MAX_NOTCHES = 7
 const NUDGE_MU = Math.log(2)
 const NUDGE_SD = 0.54
+const NUDGE_REGRIP_MU = 4.258
+const NUDGE_REGRIP_SD = 0.446
 
 const MAC_FRAME_MS = 20
 const MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -113,7 +119,9 @@ function notchedPath(target: number, rng: Rng, pxPerNotch: number): ScrollEvent[
       : lognormal(rng, NOTCHES_MU, NOTCHES_SD)
     const n = Math.min(left, Math.max(1, Math.round(size)))
     const duration = Math.min(n * NOTCH_MAX_MS, clamp(lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
-    const regrip = clamp(lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+    const regrip = nudged
+      ? clamp(lognormal(rng, NUDGE_REGRIP_MU, NUDGE_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+      : clamp(lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
     let last = start
     for (let i = 0; i < n; i++) {
       last = start + duration * (1 - Math.sqrt(1 - (i + 0.5) / n))

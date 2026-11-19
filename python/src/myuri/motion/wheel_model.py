@@ -39,17 +39,19 @@ REGRIP_MIN_MS = 50
 REGRIP_MAX_MS = 600
 LONE_NOTCH_PROBABILITY = 0.33
 
-NOTCHES_MU = 2.833
-NOTCHES_SD = 0.27
-FLICK_MU = 5.064
-FLICK_SD = 0.18
-FLICK_REGRIP_MU = 4.258
-FLICK_REGRIP_SD = 0.446
+NOTCHES_MU = 2.079
+NOTCHES_SD = 0.342
+FLICK_MU = 4.828
+FLICK_SD = 0.352
+FLICK_REGRIP_MU = 4.828
+FLICK_REGRIP_SD = 0.727
 FRAME_MS = 1000 / 60
 NOTCH_MAX_MS = 2 * FRAME_MS
 NUDGE_MAX_NOTCHES = 7
 NUDGE_MU = math.log(2)
 NUDGE_SD = 0.54
+NUDGE_REGRIP_MU = 4.258
+NUDGE_REGRIP_SD = 0.446
 
 MAC_FRAME_MS = 20
 MAC_DROPPED_FRAME_PROBABILITY = 0.1
@@ -91,7 +93,8 @@ def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEven
             size = _lognormal(rng, NOTCHES_MU, NOTCHES_SD)
         n = min(left, max(1, _js_round(size)))
         duration = min(n * NOTCH_MAX_MS, _clamp(_lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
-        regrip = _clamp(_lognormal(rng, FLICK_REGRIP_MU, FLICK_REGRIP_SD), REGRIP_MIN_MS, REGRIP_MAX_MS)
+        mu, sd = (NUDGE_REGRIP_MU, NUDGE_REGRIP_SD) if nudged else (FLICK_REGRIP_MU, FLICK_REGRIP_SD)
+        regrip = _clamp(_lognormal(rng, mu, sd), REGRIP_MIN_MS, REGRIP_MAX_MS)
         last = start
         for i in range(n):
             last = start + duration * (1 - math.sqrt(1 - (i + 0.5) / n))

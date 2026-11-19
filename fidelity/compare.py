@@ -23,6 +23,7 @@ MOVE_NOISE = {"pointermove", "mousemove", "pointerover", "pointerout", "pointere
 CLICK_TASKS = {"targets", "buttons", "hover-menu", "choices", "rapid-click"}
 TYPE_TASKS = {"type-short", "type-long", "type-symbols", "type-own-words"}
 WHEEL_TASKS = {"notch-down", "notch-up", "notch-pixels", "notch-nested", "wheel-burst", "wheel-spin", "wheel-horizontal"}
+TARGET_SCROLL_TASKS = ("find-and-click", "scroll-box-accept", "shop-flow")
 
 
 def load(d: Path):
@@ -181,6 +182,24 @@ def metrics(ev):
         m[f"{task}: legacy events per wheel"] = len(legacy) / len(ws)
         if task == "wheel-horizontal":
             m[f"{task}: shiftKey on wheel %"] = 100 * sum(bool(e.get("shift")) for e in ws) / len(ws)
+
+    # A scroll to a target, split into finger strokes at gaps over 40 ms; a notch is wheelDelta 120.
+    strokes, regrips = [], []
+    for task in TARGET_SCROLL_TASKS:
+        ws = [e for e in by_task.get(task, []) if e["type"] == "wheel"]
+        cur = []
+        for a, b in zip(ws, ws[1:] + [None]):
+            cur.append(a)
+            if b is None or b["t"] - a["t"] > 40:
+                if sum(abs(e.get("wheelDeltaY") or 0) for e in cur) >= 3 * 120:
+                    strokes.append(cur)
+                if b is not None and b["t"] - a["t"] < 1000:
+                    regrips.append(b["t"] - a["t"])
+                cur = []
+    m["scroll to target: stroke notches p10/50/90"] = pct(
+        [sum(abs(e.get("wheelDeltaY") or 0) for e in s) / 120 for s in strokes], 10, 50, 90)
+    m["scroll to target: stroke ms p10/50/90"] = pct([s[-1]["t"] - s[0]["t"] for s in strokes], 10, 50, 90)
+    m["scroll to target: re-grip ms p10/50/90"] = pct(regrips, 10, 50, 90)
 
     # ---- keyboard --------------------------------------------------------------
     holds, gaps, orders = [], [], collections.Counter()
