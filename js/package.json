@@ -1,6 +1,6 @@
 {
   "name": "@jwriter20/myuri",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "API-agnostic human-like browser cursor, keyboard, and scroll simulation. Bring your own driver (Playwright, CDP, Puppeteer, or custom).",
   "homepage": "https://github.com/JWriter20/Myuri#readme",
   "bugs": {
