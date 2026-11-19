@@ -47,9 +47,10 @@ CONTEXT: Dict[str, float] = {
     "afterBs": 0.657,
 }
 
+# Pauses are a little rarer and shorter than the fit (8% at mean 1.2); see timing.ts.
 NOISE_SD = 0.48
-PAUSE_PROB = 0.08
-PAUSE_MEAN = 1.2
+PAUSE_PROB = 0.06
+PAUSE_MEAN = 1.0
 PAUSE_SD = 0.5
 DRIFT_RHO = 0.97
 DRIFT_STEP_SD = 0.03

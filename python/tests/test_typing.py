@@ -219,6 +219,21 @@ def test_hits_requested_wpm():
         assert abs(mean - target) / target < 0.12, (wpm, mean)
 
 
+def test_pauses_inside_words_are_rare_and_short():
+    gaps = []
+    for seed in range(40):
+        strokes = strokes_for_text(PARAGRAPH * 4)
+        _, down_at = KeystrokeTiming(80, make_rng(seed)).plan(strokes)
+        gaps += [
+            down_at[i] - down_at[i - 1]
+            for i in range(1, len(strokes))
+            if strokes[i - 1].key.isalpha() and strokes[i].key.isalpha() and strokes[i].key.islower()
+        ]
+    over_1s = sum(g > 1000 for g in gaps) / len(gaps)
+    assert 0 < over_1s < 0.002, over_1s
+    assert sum(g > 600 for g in gaps) / len(gaps) < 0.008
+
+
 def test_common_bigrams_are_faster_and_contexts_pause():
     def g(a, b):
         return log_gap_mean(Stroke(a), Stroke(b))
@@ -233,22 +248,22 @@ def test_common_bigrams_are_faster_and_contexts_pause():
 # Cross-language parity: the same seed must give the TypeScript timeline
 # (printed by js `new KeystrokeTiming(80, makeRng(1234)).plan(...)`, at rounded to 1 us).
 GOLDEN_PLAN = json.loads(
-    '[[0,"down","Shift"],[150.138,"down","H"],[263.151,"up","Shift"],[271.151,"down","i"],'
-    '[293.428,"up","H"],[353.834,"up","i"],[492.417,"down"," "],[580.318,"up"," "],'
-    '[819.842,"down","Shift"],[1001.93,"down","B"],[1029.454,"up","Shift"],[1066.322,"down","o"],'
-    '[1084.714,"up","B"],[1117.961,"up","o"],[1196.196,"down","b"],[1279.598,"down",","],'
-    '[1291.409,"up","b"],[1359.691,"up",","],[1387.867,"down"," "],[1447.326,"up"," "],'
-    '[1541.419,"down","4"],[1652.544,"down","2"],[1661.337,"up","4"],[1738.821,"down"," "],'
-    '[1740.77,"up","2"],[1797.731,"up"," "],[1905.154,"down","a"],[1967.755,"up","a"],'
-    '[1987.854,"down","p"],[2108.033,"up","p"],[2150.38,"down","p"],[2250.689,"up","p"],'
-    '[2299.399,"down","l"],[2384.725,"up","l"],[2397.021,"down","e"],[2455.089,"down","s"],'
-    '[2467.832,"up","e"],[2519.629,"up","s"],[2754.242,"down","Shift"],[2981.747,"down","!"],'
-    '[3047.762,"up","!"],[3061.731,"up","Shift"]]'
+    '[[0,"down","Shift"],[150.138,"down","H"],[273.497,"up","Shift"],[281.497,"down","i"],'
+    '[296.998,"up","H"],[366.24,"up","i"],[521.679,"down"," "],[611.77,"up"," "],'
+    '[892.663,"down","Shift"],[1074.751,"down","B"],[1104.337,"up","Shift"],'
+    '[1144.648,"down","o"],[1159.598,"up","B"],[1197.574,"up","o"],[1285.624,"down","b"],'
+    '[1376.157,"down",","],[1383.21,"up","b"],[1458.246,"up",","],[1493.682,"down"," "],'
+    '[1554.622,"up"," "],[1660.361,"down","4"],[1780.986,"down","2"],[1783.268,"up","4"],'
+    '[1871.411,"up","2"],[1874.64,"down"," "],[1935.018,"up"," "],[2055.193,"down","a"],'
+    '[2119.353,"up","a"],[2144.963,"down","p"],[2268.136,"up","p"],[2321.383,"down","p"],'
+    '[2424.192,"up","p"],[2483.142,"down","l"],[2570.594,"up","l"],[2589.11,"down","e"],'
+    '[2652.142,"down","s"],[2661.686,"up","e"],[2718.291,"up","s"],[2996.32,"down","Shift"],'
+    '[3223.825,"down","!"],[3291.485,"up","!"],[3305.454,"up","Shift"]]'
 )
 
 
 def test_timing_plan_matches_typescript():
-    assert REFERENCE_MEAN_GAP_MS == pytest.approx(198.3783812468994, rel=1e-12)
+    assert REFERENCE_MEAN_GAP_MS == pytest.approx(182.75445088999987, rel=1e-12)
     actions, _ = KeystrokeTiming(80, make_rng(1234)).plan(strokes_for_text("Hi Bob, 42 apples!"))
     assert [(a.type, a.key) for a in actions] == [(t, k) for _, t, k in GOLDEN_PLAN]
     for a, (at, _, _) in zip(actions, GOLDEN_PLAN):
