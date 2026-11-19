@@ -16,7 +16,7 @@ from .motion.click_model import drag_carry_speed, drag_end_ms, drag_start_ms, pr
 from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import bounding_box_of, scroll_offset_of, viewport_of, wait_for_element
 from .page_functions import FOCUSED_FIELD_JS, on_selector
-from .plan import wheel_steps, wheel_style_for
+from .plan import wheel_steps
 from .profile import profile_from_seed
 from .rng import Rng, generate_random_seed, make_rng
 from .target_os import primary_modifier
@@ -205,8 +205,7 @@ class Cursor:
         self._driver = driver
         self._seed = (seed if seed is not None else generate_random_seed()) & 0xFFFFFFFF
         self._rng = make_rng(self._seed)
-        resolved = profile_from_seed(self._seed, settings)
-        resolved.scroll.wheel.style = wheel_style_for(os, settings)
+        resolved = profile_from_seed(self._seed, settings, os)
         self._actions = _CursorActions(_DriverHost(driver), self._rng, os=os, settings=resolved)
         self._settings = self._actions.settings
         self._defaults = defaults or {}

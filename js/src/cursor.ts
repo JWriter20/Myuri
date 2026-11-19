@@ -9,7 +9,7 @@ import { FOCUSED_FIELD_JS, onSelector } from './page-functions.js'
 import { Actions, type Host, type Step } from './actions.js'
 import { getRandomBoxPoint, getBetterStartingPosition, isPointExcluded } from './geometry.js'
 import { dragCarrySpeed, dragEndMs, dragStartMs, preClickDwellMs } from './motion/click-model.js'
-import { wheelStyleFor, wheelSteps } from './plan.js'
+import { wheelSteps } from './plan.js'
 import { primaryModifier, type Os } from './target-os.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type {
@@ -207,8 +207,7 @@ export class Cursor {
     this.driver = defineDriver(driver, { os: options.os })
     this.seed = (options.seed ?? generateRandomSeed()) >>> 0
     this.rng = makeRng(this.seed)
-    const settings = generateProfile(this.seed, options.settings)
-    settings.scroll.wheel.style = wheelStyleFor(options.os, options.settings)
+    const settings = generateProfile(this.seed, options.settings, options.os)
     this.actions = new CursorActions(new DriverHost(this.driver), this.rng, { os: options.os, settings })
     this.settings = this.actions.settings
     this.defaults = options.defaults ?? {}

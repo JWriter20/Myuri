@@ -34,4 +34,10 @@ describe('generateProfile', () => {
   it('keeps a scroll’s finish position inside the viewport', () => {
     for (let seed = 0; seed < 50; seed++) expect(generateProfile(seed, { scroll: { finishPosition: 1 } }).scroll.finishPosition).toBeLessThanOrEqual(1)
   })
+
+  it("uses the OS's wheel style unless the settings name one", () => {
+    expect(generateProfile(1, undefined, 'macos').scroll.wheel.style).toBe('macos')
+    expect(generateProfile(1, undefined, 'windows').scroll.wheel.style).toBe('notched')
+    expect(generateProfile(1, { scroll: { wheel: { style: 'notched' } } }, 'macos').scroll.wheel.style).toBe('notched')
+  })
 })

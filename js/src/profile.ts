@@ -13,15 +13,19 @@
 
 import { type DeepPartial, type MyuriSettings, resolveSettings } from './settings.js'
 import { makeRng, gaussian } from './rng.js'
+import { wheelStyleFor } from './plan.js'
+import type { Os } from './target-os.js'
 
 /**
  * The settings one person runs with: `settings` (deep-merged onto the defaults)
  * with each trait scaled by a factor drawn from `seed`, normal around 1 with sd
  * `variation / 2`, clamped to 1 ± `variation`. Same seed and settings, same
- * profile. The device, the wheel and `variation` itself are not drawn.
+ * profile. The device, the wheel and `variation` itself are not drawn; the
+ * wheel style is the `os`'s unless `settings` name one.
  */
-export function generateProfile(seed: number, settings?: DeepPartial<MyuriSettings>): MyuriSettings {
+export function generateProfile(seed: number, settings?: DeepPartial<MyuriSettings>, os?: Os): MyuriSettings {
   const p = resolveSettings(settings)
+  p.scroll.wheel.style = wheelStyleFor(os, settings)
   const rng = makeRng(seed >>> 0)
   const v = p.variation
   const vary = (x: number) => x * Math.min(1 + v, Math.max(1 - v, gaussian(rng, 1, v / 2)))

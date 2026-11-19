@@ -13,17 +13,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from .plan import wheel_style_for
 from .rng import gaussian, make_rng
 from .settings import MyuriSettings, resolve_settings
 
 
-def profile_from_seed(seed: int, settings: Optional[Dict[str, Any]] = None) -> MyuriSettings:
+def profile_from_seed(seed: int, settings: Optional[Dict[str, Any]] = None, os: Optional[str] = None) -> MyuriSettings:
     """The settings one person runs with: ``settings`` (merged onto the
     defaults) with each trait scaled by a factor drawn from ``seed``, normal
     around 1 with sd ``variation / 2``, clamped to 1 ± ``variation``. Same seed
     and settings, same profile. The device, the wheel and ``variation`` itself
-    are not drawn."""
+    are not drawn; the wheel style is the ``os``'s unless ``settings`` name one."""
     p = resolve_settings(settings)
+    p.scroll.wheel.style = wheel_style_for(os, settings)
     rng = make_rng(int(seed) & 0xFFFFFFFF)
     v = p.variation
 

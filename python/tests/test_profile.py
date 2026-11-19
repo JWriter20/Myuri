@@ -55,3 +55,9 @@ def test_cross_language_parity_with_typescript():
         got = (p.mouse.speed_factor, p.typing.wpm, p.typing.mistake_multiplier, p.typing.pauses.rate,
                p.scroll.speed_factor, p.scroll.finish_position, p.overshoot.radius, p.overshoot.dwell.max_ms)
         assert all(abs(a - b) < 1e-9 for a, b in zip(got, ref)), (seed, got)
+
+
+def test_uses_the_oss_wheel_style_unless_settings_name_one():
+    assert profile_from_seed(1, None, "macos").scroll.wheel.style == "macos"
+    assert profile_from_seed(1, None, "windows").scroll.wheel.style == "notched"
+    assert profile_from_seed(1, {"scroll": {"wheel": {"style": "notched"}}}, "macos").scroll.wheel.style == "notched"

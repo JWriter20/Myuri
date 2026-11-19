@@ -384,7 +384,9 @@ A cursor runs as one person: it draws each numeric setting from its seed, within
 ±`variation` of the configured value (normal around it, sd `variation / 2`). The same seed
 and settings give the same person every time; another seed is someone similar, not
 identical. The device, the wheel and `variation` itself are not drawn. Without a seed the
-seed is random, and so is the profile. `Actions` runs the settings it is given as they are.
+seed is random, and so is the profile. `Actions` runs the settings it is given as they are,
+so to run one person on your own host, pass it `generateProfile(seed, settings, os)`; the
+`os` gives the profile that OS's wheel style.
 
 ```ts
 import { createCursor, generateProfile } from '@jwriter20/myuri'
