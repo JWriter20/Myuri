@@ -85,7 +85,6 @@ export {
 export { RESOLVE_SELECTOR_JS, HIT_TEST_JS, onSelector, type HitTestArgs } from './page-functions.js'
 export {
   SCROLL_PLAN_JS,
-  SCROLL_FINISH_POSITION,
   SCROLL_PAD,
   SCROLL_EDGE,
   type ScrollPlan,

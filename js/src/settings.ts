@@ -7,18 +7,32 @@
 import type { WheelStyle } from './motion/wheel-model.js'
 
 export interface MyuriSettings {
+  /**
+   * How far each trait of a seed's profile may stray from these settings: a
+   * trait is drawn within ±`variation` of its value (0.2 = ±20%). 0 runs the
+   * settings exactly. See `generateProfile`.
+   */
+  variation: number
+  mouse: {
+    /** Move speed (2 = moves take half as long). A call's `moveSpeed` replaces it. */
+    speedFactor: number
+  }
   overshoot: {
-    spread: number
+    /** How far past the target an overshoot lands, px. */
     radius: number
+    /** Moves longer than this (px) overshoot and correct back. */
     threshold: number
+    /** Speed of the correction back, relative to the move. */
     correctionSpeedFactor: number
+    /** Pause at the overshoot point before correcting, ms. */
     dwell: { minMs: number; maxMs: number }
   }
   scroll: {
-    delay: number
+    /** Scroll speed (2 = each scroll and the pause between strokes take half as long). */
     speedFactor: number
-    overshoot: number
+    /** Where a scroll leaves the element in the viewport: 0 top, 0.5 middle, 1 bottom. */
     finishPosition: number
+    /** How unevenly a trackpad scroll's speed varies. */
     realism: { speedIrregularity: number }
     /**
      * What the identity scrolls with. `trackpad` (default) sends a stream of
@@ -34,28 +48,30 @@ export interface MyuriSettings {
     }
   }
   typing: {
+    /** Words per minute, with the default pauses. */
     wpm: number
+    /** How often typos happen (0 = never, 2 = twice as often). */
     mistakeMultiplier: number
     /**
-     * @deprecated Ignored since 3.1. Key holds are now drawn per key from
-     * recorded typing (see `typing/timing.ts`); accepted so old configs load.
+     * Hesitations between keys: `rate` scales how often one happens, `length`
+     * how much time it adds. `wpm` counts the default pauses, so fewer or
+     * shorter pauses type a little faster than `wpm`.
      */
-    keyDelay?: { min: number; max: number }
+    pauses: { rate: number; length: number }
   }
 }
 
 export const defaultSettings: MyuriSettings = {
+  variation: 0.2,
+  mouse: { speedFactor: 1 },
   overshoot: {
-    spread: 10,
     radius: 120,
     threshold: 500,
     correctionSpeedFactor: 1,
     dwell: { minMs: 20, maxMs: 60 },
   },
   scroll: {
-    delay: 50,
-    speedFactor: 1.0,
-    overshoot: 30,
+    speedFactor: 1,
     finishPosition: 0.5,
     realism: { speedIrregularity: 0.08 },
     device: 'trackpad',
@@ -63,7 +79,8 @@ export const defaultSettings: MyuriSettings = {
   },
   typing: {
     wpm: 80,
-    mistakeMultiplier: 1.0,
+    mistakeMultiplier: 1,
+    pauses: { rate: 1, length: 1 },
   },
 }
 
@@ -82,15 +99,16 @@ function deepClone<T>(value: T): T {
   return out
 }
 
-function deepMerge<T>(base: T, override: DeepPartial<T> | undefined): T {
+function deepMerge<T>(base: T, override: DeepPartial<T> | undefined, path: string): T {
   const out = deepClone(base)
   if (!override) return out
   for (const key of Object.keys(override) as Array<keyof T>) {
+    if (!Object.prototype.hasOwnProperty.call(base, key)) throw new TypeError(`myuri: unknown setting '${path}${String(key)}'`)
     const ov = override[key]
     if (ov === undefined) continue
     const bv = out[key]
     if (ov && typeof ov === 'object' && !Array.isArray(ov) && bv && typeof bv === 'object') {
-      out[key] = deepMerge(bv, ov as DeepPartial<typeof bv>)
+      out[key] = deepMerge(bv, ov as DeepPartial<typeof bv>, `${path}${String(key)}.`)
     } else {
       out[key] = ov as T[keyof T]
     }
@@ -98,9 +116,9 @@ function deepMerge<T>(base: T, override: DeepPartial<T> | undefined): T {
   return out
 }
 
-/** Produce a fresh, fully-owned settings object from a partial override. */
+/** Produce a fresh, fully-owned settings object from a partial override. Unknown keys throw. */
 export function resolveSettings(override?: DeepPartial<MyuriSettings>): MyuriSettings {
-  return deepMerge(defaultSettings, override)
+  return deepMerge(defaultSettings, override, '')
 }
 
 export type { DeepPartial }

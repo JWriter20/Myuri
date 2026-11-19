@@ -21,7 +21,7 @@ import { trajectory, getRandomBoxPoint, shouldOvershoot, type PlannedPoint } fro
 import { clickHoldMs, multiClickGapMs, preClickDwellMs } from './motion/click-model.js'
 import { generateWheelPath, type WheelStyle } from './motion/wheel-model.js'
 import { scrollModel } from './motion/scroll-model.js'
-import { KeystrokeTiming, needsShift, type KeyAction } from './typing/timing.js'
+import { KeystrokeTiming, needsShift, type KeyAction, type Pauses } from './typing/timing.js'
 import { drawSessionWpm, planTyping } from './typing/typer.js'
 import { DEFAULT_WPM } from './typing/config.js'
 
@@ -33,7 +33,7 @@ export type { PlannedPoint }
 export interface PlanMoveOptions {
   /** The OS the browser claims; checked only, as a move is planned the same on every OS. */
   os?: Os
-  /** Speed multiplier (2 = twice as fast). */
+  /** Speed multiplier (2 = twice as fast). Defaults to `settings.mouse.speedFactor`. */
   moveSpeed?: number
   /**
    * Overshoot past `end` and correct back. Defaults to whether the move is
@@ -73,9 +73,9 @@ export function moveWith(start: Vector, end: Vector, rng: Rng, spec: MoveSpec, s
  */
 export function planMove(start: Vector, end: Vector, rng: Rng, options: PlanMoveOptions = {}): PlannedPoint[] {
   checkOs(options.os)
-  const settings = resolveSettings(options.settings).overshoot
+  const { mouse, overshoot: settings } = resolveSettings(options.settings)
   const overshoot = options.overshoot ?? shouldOvershoot(start, end, settings.threshold)
-  return moveWith(start, end, rng, { moveSpeed: options.moveSpeed, overshoot, settings }, (p) => p)
+  return moveWith(start, end, rng, { moveSpeed: options.moveSpeed ?? mouse.speedFactor, overshoot, settings }, (p) => p)
 }
 
 /**
@@ -168,11 +168,13 @@ export interface PlanTypeOptions {
   os?: Os
   /** Words per minute this session is drawn around. */
   wpm?: number
+  /** See `settings.typing.pauses`. */
+  pauses?: Pauses
 }
 
 function session(rng: Rng, options: PlanTypeOptions): KeystrokeTiming {
   checkOs(options.os)
-  return new KeystrokeTiming(drawSessionWpm(rng, options.wpm ?? DEFAULT_WPM), rng)
+  return new KeystrokeTiming(drawSessionWpm(rng, options.wpm ?? DEFAULT_WPM), rng, options.pauses)
 }
 
 /**
@@ -208,6 +210,8 @@ export interface WheelSpec {
   device: 'trackpad' | 'mouse'
   wheel: MyuriSettings['scroll']['wheel']
   speedIrregularity: number
+  /** Divides every time in the scroll (see `settings.scroll.speedFactor`). */
+  speedFactor: number
 }
 
 /** Chromium ignores very small wheel deltas, so a trackpad's are sent in batches of at least this many px. */
@@ -229,7 +233,7 @@ export function wheelWith(distance: number, rng: Rng, spec: WheelSpec): { events
   for (const ev of model) {
     total += ev.deltaY
     raw.push([end, ev.deltaY])
-    end += ev.deltaTime
+    end += ev.deltaTime / spec.speedFactor
   }
   if (mouse) return { events: raw, end, total }
   const events: [number, number][] = []
@@ -287,6 +291,7 @@ export function planWheel(deltaX: number, deltaY: number, rng: Rng, options: Pla
     device: options.device ?? settings.scroll.device,
     wheel: { ...settings.scroll.wheel, style: wheelStyleFor(options.os, options.settings) },
     speedIrregularity: settings.scroll.realism.speedIrregularity,
+    speedFactor: settings.scroll.speedFactor,
   }
   return wheelSteps(deltaX, deltaY, rng, options.os, spec)
 }
@@ -302,10 +307,10 @@ export function wheelSteps(deltaX: number, deltaY: number, rng: Rng, os: Os | un
   }
   if (deltaX !== 0) {
     out.push(['key', 'Shift', 'down', t])
-    t += Math.exp(gaussian(rng, ...SHIFT_WHEEL_LEAD))
+    t += Math.exp(gaussian(rng, ...SHIFT_WHEEL_LEAD)) / spec.speedFactor
     const { events } = wheelWith(deltaX, rng, spec)
     for (const [at, d] of events) out.push(os === 'macos' ? ['wheel', d, 0, t + at] : ['wheel', 0, d, t + at])
-    t = out[out.length - 1][3] + Math.exp(gaussian(rng, ...SHIFT_WHEEL_TRAIL))
+    t = out[out.length - 1][3] + Math.exp(gaussian(rng, ...SHIFT_WHEEL_TRAIL)) / spec.speedFactor
     out.push(['key', 'Shift', 'up', t])
   }
   return out

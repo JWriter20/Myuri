@@ -153,13 +153,14 @@ hand it to `create_cursor(driver=...)`.
    - Word starts, punctuation, digits and noticing a typo all pause.
    - About one key in 17 waits longer, like a person hesitating. These pauses are a little
      rarer and shorter than in the recordings, where they read as stalls.
+     `typing.pauses` scales how often (`rate`) and how long (`length`) they are.
    - Shift is pressed and released on its own.
    - About a third of keys overlap the next one (rollover), as in the recordings.
    - `wpm` sets the mean pace (5 characters per word).
 
 The typer sends `down`/`up` itself, and `insertText` for characters no US key produces.
 Each action fires at its planned time on an absolute clock, so driver round-trips don't
-add to every gap. The old `keyDelay` setting is ignored.
+add to every gap.
 
 **Don't pace keys twice.** If the browser adds its own key timing (for example Camoufox's
 humanize keyboard channel), set that to raw while myuri types. Otherwise every gap gets
@@ -243,8 +244,8 @@ milliseconds from the start of the plan.
 | `planMove(start, end, rng, { os, moveSpeed, overshoot, settings })` | `plan_move(start, end, rng, *, os, move_speed, overshoot, settings)` | `{ x, y, t }` points, one a mouse report (about 10 ms); the last is exactly `end`. Off macOS, a Cursor skips a report on the pixel it already sent |
 | `planPoint(box, rng, { start })` | `plan_point(box, rng, *, start)` | where in `box` a person clicks; `start` itself when it is already in `box` |
 | `planClick(rng, { os, clickCount, sinceReleaseMs })` | `plan_click(rng, *, os, click_count, since_release_ms)` | the dwell before the first press, and each press's down and up. Pass `sinceReleaseMs` when the pointer has not moved since the last release: within 500 ms the click continues that run, as rapid clicks in place do |
-| `planType(text, rng, { os, wpm, mistakeMultiplier })` | `plan_type(text, rng, *, os, wpm, mistake_multiplier)` | `[t, 'down' \| 'up' \| 'insert', key]` steps, typos included |
-| `planPress(key, rng, { os, wpm })` | `plan_press(key, rng, *, os, wpm)` | the steps of a key or chord (`'Control+Shift+z'`) |
+| `planType(text, rng, { os, wpm, mistakeMultiplier, pauses })` | `plan_type(text, rng, *, os, wpm, mistake_multiplier, pauses)` | `[t, 'down' \| 'up' \| 'insert', key]` steps, typos included |
+| `planPress(key, rng, { os, wpm, pauses })` | `plan_press(key, rng, *, os, wpm, pauses)` | the steps of a key or chord (`'Control+Shift+z'`) |
 | `planSelectAll(rng, { os })` | `plan_select_all(rng, *, os)` | Cmd+A or Ctrl+A for `os` |
 | `planWheel(dx, dy, rng, { os, device, settings })` | `plan_wheel(dx, dy, rng, *, os, device, settings)` | `['wheel', dx, dy, t]` and `['key', 'Shift', 'down' \| 'up', t]` steps |
 
@@ -330,6 +331,48 @@ def into_view(host, target, *, default, rng, play):
 actions = Actions(host, make_rng(1234), parts={"into_view": into_view}, asynchronous=True)
 ```
 
+## Settings
+
+Every setting, with its default. Pass any subset as `settings` to `createCursor` /
+`create_cursor` or `Actions`; the rest keep their defaults, and a key that doesn't exist
+throws. Python spells each key in snake_case (`mouse.speed_factor`).
+
+| Setting | Default | What it does |
+|---|---|---|
+| `variation` | `0.2` | How far a seed's profile may stray from these settings (±20%). `0` runs them exactly. See [Determinism](#determinism) |
+| `mouse.speedFactor` | `1` | Move speed. `2` makes moves take about half as long. A call's `moveSpeed` replaces it |
+| `overshoot.threshold` | `500` | Moves longer than this many px overshoot the target |
+| `overshoot.radius` | `120` | How far past the target, in px, an overshoot can land |
+| `overshoot.correctionSpeedFactor` | `1` | Speed of the correction back, relative to the move |
+| `overshoot.dwell.minMs`, `maxMs` | `20`, `60` | The pause before correcting |
+| `scroll.speedFactor` | `1` | Scroll speed. `2` halves each scroll and the pause between strokes |
+| `scroll.finishPosition` | `0.5` | Where a scroll leaves the element: `0` top, `0.5` middle, `1` bottom of the viewport |
+| `scroll.realism.speedIrregularity` | `0.08` | How unevenly a scroll's speed varies |
+| `scroll.device` | `'trackpad'` | `'trackpad'` or `'mouse'` (see [Scrolling](#scrolling)) |
+| `scroll.wheel.style` | `'notched'` (`'macos'` with `os: 'macos'`) | How a mouse wheel reports: `'notched'` or `'macos'` |
+| `scroll.wheel.pxPerNotch`, `pxPerLine` | `100`, `16` | Pixels per wheel notch and per line |
+| `typing.wpm` | `80` | Words per minute, counting the default pauses |
+| `typing.mistakeMultiplier` | `1` | How often typos happen: `0` never, `2` twice as often |
+| `typing.pauses.rate` | `1` | How often a key hesitates: `0` never, `2` twice as often |
+| `typing.pauses.length` | `1` | How much time a hesitation adds: `0.5` half |
+
+`typing.wpm` is calibrated with the default pauses, so fewer or shorter pauses type a
+little faster than `wpm` (without any, about 12% faster).
+
+```ts
+const cursor = createCursor(page, {
+  settings: { mouse: { speedFactor: 1.5 }, scroll: { speedFactor: 1.5 }, typing: { wpm: 110, pauses: { rate: 0.5 } } },
+})
+```
+
+```python
+cursor = create_cursor(page, settings={
+    "mouse": {"speed_factor": 1.5},
+    "scroll": {"speed_factor": 1.5},
+    "typing": {"wpm": 110, "pauses": {"rate": 0.5}},
+})
+```
+
 ## Determinism
 
 Both packages use a seeded Mulberry32 PRNG. Pass `seed` to reproduce identical mouse paths,
@@ -337,30 +380,30 @@ scroll dynamics, and typing rhythm; read it back with `cursor.get_seed()` / `cur
 
 ### Seed → behavioral profile
 
-A seed doesn't just fix the *motion stream* — it also derives a stable **behavioral
-profile** (a *behavioral fingerprint*): how fast this identity types, how often it
-mistypes, how aggressively it overshoots, how quickly it scrolls. When you construct a
-cursor with a `seed` and no explicit `settings`, that profile is applied automatically:
+A cursor runs as one person: it draws each numeric setting from its seed, within
+±`variation` of the configured value (normal around it, sd `variation / 2`). The same seed
+and settings give the same person every time; another seed is someone similar, not
+identical. The device, the wheel and `variation` itself are not drawn. Without a seed the
+seed is random, and so is the profile. `Actions` runs the settings it is given as they are.
 
 ```ts
 import { createCursor, generateProfile } from '@jwriter20/myuri'
 
-const cursor = createCursor(page, { seed: 1234 }) // profile derived from 1234
-cursor.getSettings()                              // inspect the resolved traits
-generateProfile(1234)                             // or derive one standalone
+const cursor = createCursor(page, { seed: 1234, settings: { typing: { wpm: 100 } } })
+cursor.getSettings()                                  // the profile it runs with
+generateProfile(1234, { typing: { wpm: 100 } })       // the same profile, standalone
 ```
 
 ```python
 from myuri import create_cursor, profile_from_seed
 
-cursor = create_cursor(page, seed=1234)
+cursor = create_cursor(page, seed=1234, settings={"typing": {"wpm": 100}})
 cursor.get_settings()
-profile_from_seed(1234)
+profile_from_seed(1234, {"typing": {"wpm": 100}})
 ```
 
-Because both languages share the PRNG and draw order, a given seed produces a
-byte-identical profile in TypeScript and Python. An explicit `settings` override always
-wins over the derived profile.
+Because both languages share the PRNG and draw order, a seed and settings give an
+identical profile in TypeScript and Python.
 
 ## Repo layout
 

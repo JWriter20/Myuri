@@ -29,8 +29,6 @@ SCROLL_PLAN_JS: str = _SOURCE["SCROLL_PLAN_JS"]
 BOX_JS: str = _SOURCE["BOX_JS"]
 FOCUSED_FIELD_JS: str = _SOURCE["FOCUSED_FIELD_JS"]
 
-SCROLL_FINISH_POSITION = 0.5
-"""Where the planner puts the target: 0 top, 0.5 middle, 1 bottom of the clear band."""
 SCROLL_PAD = max(20, VIEWPORT_PADDING + 5)
 """Top and bottom margin (px) of the band the target is scrolled into."""
 SCROLL_EDGE = VIEWPORT_PADDING

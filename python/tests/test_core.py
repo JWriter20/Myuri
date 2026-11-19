@@ -31,8 +31,8 @@ def test_rng_seed_0_1_no_collision():
 
 def test_settings_deep_copy_isolation():
     s = resolve_settings(None)
-    s.scroll.delay = 9999
-    assert default_settings().scroll.delay != 9999
+    s.scroll.realism.speed_irregularity = 9999
+    assert default_settings().scroll.realism.speed_irregularity != 9999
 
 
 def test_scroll_model_never_empty_for_nonzero():
