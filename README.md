@@ -176,9 +176,9 @@ two delays.
 
 With `device: 'mouse'`, `scroll.wheel.style` sets how the wheel reports:
 - `notched` (Windows, Linux): notches of `pxPerNotch` (default 100). A stroke flicks about
-  17 notches (11 to 22) over about 158 ms, fastest at the start, and the finger re-grips for
-  about 70 ms. Notches that land in one 60 Hz display frame arrive as one wheel call of 2 to
-  4 notches, as the page receives them. A scroll of up to 7 notches is nudged instead: a lone
+  8 notches (5 to 12) over about 125 ms, fastest at the start, and the finger re-grips for
+  about 125 ms, as a recorded mouse scrolled to a target. Notches that land in one 60 Hz
+  display frame arrive as one wheel call of 2 or 3 notches, as the page receives them. A scroll of up to 7 notches is nudged instead: a lone
   notch, then strokes of about 2 notches with a re-grip between them.
 - `macos`: 20 ms frames of `pxPerLine` (default 16) lines. Each stroke starts at one line a
   frame and accelerates to about 10, as macOS does. After a re-grip of up to 150 ms macOS

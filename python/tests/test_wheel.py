@@ -14,18 +14,29 @@ def test_notched_whole_notches():
     assert generate_wheel_path(0.3, make_rng(1)) == []
 
 
-def test_notched_flicks_in_frames():
-    regrips, events, batched = [], 0, 0
+def test_notched_scroll_to_a_target():
+    # Recorded scrolls to a target (find-and-click, scroll-box-accept, shop-flow):
+    # strokes of 5/8/12 notches (p10/50/90), re-grips median 125 ms, a third of
+    # events carry 2+ notches, and 68-69 notches took 1.7-1.9 s.
+    strokes, regrips, durations, events, batched = [], [], [], 0, 0
     for seed in range(40):
-        for e in generate_wheel_path(3000, make_rng(seed)):
+        ev = generate_wheel_path(6800, make_rng(seed))
+        durations.append(sum(e.delta_time for e in ev[:-1]))
+        notches = 0
+        for e in ev:
+            notches += abs(e.delta_y) // 100
             if e.delta_time >= 40:
                 regrips.append(e.delta_time)
+                strokes.append(notches)
+                notches = 0
             else:
                 assert e.delta_time in (16, 17, 33, 34)
             events += 1
             batched += abs(e.delta_y) > 100
-    assert 0.4 < batched / events < 0.7
-    assert 60 < statistics.median(regrips) < 100
+    assert 6 <= statistics.median(strokes) <= 11
+    assert 100 < statistics.median(regrips) < 160
+    assert 0.2 < batched / events < 0.45
+    assert 1400 < statistics.median(durations) < 2600
 
 
 def test_notched_short_scroll_is_nudged():
@@ -65,7 +76,7 @@ def test_macos_regrip_keeps_speed():
 
 # Cross-language parity: printed by js generateWheelPath(1234, makeRng(42)) and
 # generateWheelPath(-900, makeRng(7), { style: 'macos' }).
-GOLDEN = json.loads('{"notched":[[17,100],[16,300],[17,200],[17,100],[16,200],[17,100],[17,100],[53,100]],"macos":[[88,-16],[20,-16],[20,-48],[20,-64],[20,-112],[20,-128],[20,-160],[40,-160],[20,-160],[229,-32]]}')
+GOLDEN = json.loads('{"notched":[[17,100],[16,100],[17,200],[33,100],[50,100],[17,100],[17,100],[16,100],[17,100],[317,100],[77,100]],"macos":[[88,-16],[20,-16],[20,-48],[20,-64],[20,-112],[20,-128],[20,-160],[40,-160],[20,-160],[229,-32]]}')
 
 
 def test_matches_typescript():

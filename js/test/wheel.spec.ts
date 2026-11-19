@@ -14,24 +14,39 @@ describe('mouse wheel model', () => {
     expect(generateWheelPath(0.3, makeRng(1))).toEqual([])
   })
 
-  it('notched: flicks in 60 Hz frames, batched when fast, split by re-grips', () => {
+  it('notched: a scroll to a target flicks short strokes, re-gripping between them', () => {
+    const strokes: number[] = []
     const regrips: number[] = []
+    const durations: number[] = []
     let events = 0
     let batched = 0
     for (let seed = 0; seed < 40; seed++) {
-      for (const e of generateWheelPath(3000, makeRng(seed))) {
+      const ev = generateWheelPath(6800, makeRng(seed))
+      durations.push(ev.slice(0, -1).reduce((s, e) => s + e.deltaTime, 0))
+      let notches = 0
+      for (const e of ev) {
+        notches += Math.abs(e.deltaY) / 100
         // Re-grips are drawn >= 50 ms; within a flick, events are one or two frames apart.
-        if (e.deltaTime >= 40) regrips.push(e.deltaTime)
-        else expect([16, 17, 33, 34]).toContain(e.deltaTime)
+        if (e.deltaTime >= 40) {
+          regrips.push(e.deltaTime)
+          strokes.push(notches)
+          notches = 0
+        } else expect([16, 17, 33, 34]).toContain(e.deltaTime)
         events++
         if (Math.abs(e.deltaY) > 100) batched++
       }
     }
-    // Recorded: 59% of a long scroll's events carry 2+ notches; re-grip median 71 ms.
-    expect(batched / events).toBeGreaterThan(0.4)
-    expect(batched / events).toBeLessThan(0.7)
-    expect(median(regrips)).toBeGreaterThan(60)
-    expect(median(regrips)).toBeLessThan(100)
+    // Recorded scrolls to a target (find-and-click, scroll-box-accept, shop-flow):
+    // strokes of 5/8/12 notches (p10/50/90), re-grips median 125 ms, a third of
+    // events carry 2+ notches, and 68-69 notches took 1.7-1.9 s.
+    expect(median(strokes)).toBeGreaterThanOrEqual(6)
+    expect(median(strokes)).toBeLessThanOrEqual(11)
+    expect(median(regrips)).toBeGreaterThan(100)
+    expect(median(regrips)).toBeLessThan(160)
+    expect(batched / events).toBeGreaterThan(0.2)
+    expect(batched / events).toBeLessThan(0.45)
+    expect(median(durations)).toBeGreaterThan(1400)
+    expect(median(durations)).toBeLessThan(2600)
   })
 
   it('notched: a scroll of a few notches is nudged, a lone notch first', () => {
