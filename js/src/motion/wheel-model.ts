@@ -11,7 +11,8 @@ import type { ScrollEvent } from './scroll-model.js'
  * re-grips and flicks again. Two styles:
  *
  *  - `notched` (Windows, Linux): one event a notch, each `pxPerNotch` (default
- *    100, which Camoufox turns into exactly one 3-line notch). The page takes a
+ *    100; `strokeScale` fits a flick's notches to a page that moves more or less
+ *    than that a notch, so a stroke covers a recorded one's px). The page takes a
  *    fast flick's notches one display frame at a time, so the notches that land
  *    in one 60 Hz frame arrive as one event of 2-4 notches. (Firefox merges
  *    wheel events only while the page is behind, which a browser driven one
@@ -63,6 +64,13 @@ export interface WheelOptions {
   pxPerNotch?: number
   /** Pixels per line (`macos`). */
   pxPerLine?: number
+  /**
+   * Scales the notches of a flick (`notched`), so a flick covers as many page
+   * px as a recorded one when a notch moves the page more or less than
+   * `pxPerNotch`: pass the wheel px a page px takes (0.76 where a 100 px notch
+   * moves the page 132 px). Default 1.
+   */
+  strokeScale?: number
 }
 
 const STROKE_MU = 5.215
@@ -106,7 +114,7 @@ function lognormal(rng: Rng, mu: number, sd: number): number {
   return Math.exp(gaussian(rng, mu, sd))
 }
 
-function notchedPath(target: number, rng: Rng, pxPerNotch: number): ScrollEvent[] {
+function notchedPath(target: number, rng: Rng, pxPerNotch: number, strokeScale: number): ScrollEvent[] {
   const sign = Math.sign(target)
   let left = Math.max(1, Math.round(Math.abs(target) / pxPerNotch))
   // Each event's frame and notch count; the notches of one frame are one event.
@@ -116,7 +124,7 @@ function notchedPath(target: number, rng: Rng, pxPerNotch: number): ScrollEvent[
   while (left > 0) {
     const size = nudged
       ? frames.length === 0 ? 1 : lognormal(rng, NUDGE_MU, NUDGE_SD)
-      : lognormal(rng, NOTCHES_MU, NOTCHES_SD)
+      : lognormal(rng, NOTCHES_MU, NOTCHES_SD) * strokeScale
     const n = Math.min(left, Math.max(1, Math.round(size)))
     const duration = Math.min(n * NOTCH_MAX_MS, clamp(lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
     const regrip = nudged
@@ -184,5 +192,5 @@ export function generateWheelPath(desiredD: number, rng: Rng, options?: WheelOpt
   const style = options?.style ?? 'notched'
   return style === 'macos'
     ? macPath(desiredD, rng, options?.pxPerLine ?? 16)
-    : notchedPath(desiredD, rng, options?.pxPerNotch ?? 100)
+    : notchedPath(desiredD, rng, options?.pxPerNotch ?? 100, options?.strokeScale ?? 1)
 }

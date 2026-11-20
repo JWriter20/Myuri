@@ -245,25 +245,66 @@ def test_common_bigrams_are_faster_and_contexts_pause():
     assert g("e", "Backspace") > g("Backspace", "Backspace")
 
 
+
+def test_common_punctuation_is_typed_as_the_recordings_do():
+    text = "Hi Ada, mail me at ada@example.com. Is it ok? Yes: it works! See x.org/a-b, ok. " * 3
+    strokes = strokes_for_text(text)
+
+    def is_mark(k):
+        return len(k) == 1 and not (k.isalnum() or k == " ")
+
+    gaps = {}
+    for seed in range(100):
+        _, down_at = KeystrokeTiming(80, make_rng(seed)).plan(strokes)
+        chars = [(s.key, t) for s, t in zip(strokes, down_at) if len(s.key) == 1]
+        for (a, ta), (b, tb) in zip(chars, chars[1:]):
+            if a.isalpha() and b.isalpha():
+                pair = "LL"
+            elif a.isalpha() and is_mark(b):
+                pair = "L" + b
+            elif is_mark(a) and b.isalpha():
+                pair = a + "L"
+            else:
+                continue
+            gaps.setdefault(pair, []).append(tb - ta)
+
+    def median(v):
+        return sorted(v)[len(v) >> 1]
+
+    def ratio(pair):
+        return median(gaps[pair]) / median(gaps["LL"])
+
+    # Recorded (the same typist, five machines): a letter into a common mark is
+    # ~2-2.5x a letter gap, into '@', ':', '?' or '!' ~3-4.7x (Shift included),
+    # and out of a mark into a letter ~0.9-1.5x.
+    for p in ",.-/":
+        assert 2 < ratio("L" + p) < 2.5, p
+    for p in "@:?!":
+        assert 3 < ratio("L" + p) < 4.7, p
+    for p in ".-/@":
+        assert 0.9 < ratio(p + "L") < 1.5, p
+    # A rare symbol keeps the slower fit.
+    assert log_gap_mean(Stroke("e"), Stroke("$")) > log_gap_mean(Stroke("e"), Stroke("@"))
+
 # Cross-language parity: the same seed must give the TypeScript timeline
 # (printed by js `new KeystrokeTiming(80, makeRng(1234)).plan(...)`, at rounded to 1 us).
 GOLDEN_PLAN = json.loads(
-    '[[0,"down","Shift"],[150.138,"down","H"],[273.497,"up","Shift"],[281.497,"down","i"],'
-    '[296.998,"up","H"],[366.24,"up","i"],[521.679,"down"," "],[611.77,"up"," "],'
-    '[892.663,"down","Shift"],[1074.751,"down","B"],[1104.337,"up","Shift"],'
-    '[1144.648,"down","o"],[1159.598,"up","B"],[1197.574,"up","o"],[1285.624,"down","b"],'
-    '[1376.157,"down",","],[1383.21,"up","b"],[1458.246,"up",","],[1493.682,"down"," "],'
-    '[1554.622,"up"," "],[1660.361,"down","4"],[1780.986,"down","2"],[1783.268,"up","4"],'
-    '[1871.411,"up","2"],[1874.64,"down"," "],[1935.018,"up"," "],[2055.193,"down","a"],'
-    '[2119.353,"up","a"],[2144.963,"down","p"],[2268.136,"up","p"],[2321.383,"down","p"],'
-    '[2424.192,"up","p"],[2483.142,"down","l"],[2570.594,"up","l"],[2589.11,"down","e"],'
-    '[2652.142,"down","s"],[2661.686,"up","e"],[2718.291,"up","s"],[2996.32,"down","Shift"],'
-    '[3223.825,"down","!"],[3291.485,"up","!"],[3305.454,"up","Shift"]]'
+    '[[0,"down","Shift"],[150.138,"down","H"],[276.092,"up","Shift"],[284.092,"down","i"],'
+    '[297.862,"up","H"],[369.334,"up","i"],[529.019,"down"," "],[619.641,"up"," "],'
+    '[910.929,"down","Shift"],[1093.017,"down","B"],[1123.103,"up","Shift"],'
+    '[1164.295,"down","o"],[1178.364,"up","B"],[1217.533,"up","o"],[1308.057,"down","b"],'
+    '[1382.742,"down",","],[1406.217,"up","b"],[1465.313,"up",","],[1502.589,"down"," "],'
+    '[1563.887,"up"," "],[1672.56,"down","4"],[1795.569,"down","2"],[1796.19,"up","4"],'
+    '[1886.526,"up","2"],[1891.073,"down"," "],[1951.806,"up"," "],[2075.193,"down","a"],'
+    '[2139.73,"up","a"],[2166.736,"down","p"],[2290.634,"up","p"],[2346.642,"down","p"],'
+    '[2450.055,"up","p"],[2511.596,"down","l"],[2599.563,"up","l"],[2619.658,"down","e"],'
+    '[2683.935,"down","s"],[2692.66,"up","e"],[2750.473,"up","s"],[2767.385,"down","Shift"],'
+    '[2994.89,"down","!"],[3062.948,"up","!"],[3076.917,"up","Shift"]]'
 )
 
 
 def test_timing_plan_matches_typescript():
-    assert REFERENCE_MEAN_GAP_MS == pytest.approx(182.75445088999987, rel=1e-12)
+    assert REFERENCE_MEAN_GAP_MS == pytest.approx(179.2139230838201, rel=1e-12)
     actions, _ = KeystrokeTiming(80, make_rng(1234)).plan(strokes_for_text("Hi Bob, 42 apples!"))
     assert [(a.type, a.key) for a in actions] == [(t, k) for _, t, k in GOLDEN_PLAN]
     for a, (at, _, _) in zip(actions, GOLDEN_PLAN):

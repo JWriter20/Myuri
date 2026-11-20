@@ -47,8 +47,8 @@ const GOLDEN = {
   moveShort: [11, 501.518, 372.564, 669.904],
   click: { dwellMs: 600, presses: [[0, 92], [162, 246], [323, 425]] },
   // planType('Hi, Bob!'): the release time of each key.
-  typeUps: [92.695, 159.955, 162.228, 447.436, 525.877, 1008.267, 1024.293, 1129.194, 1214.201, 2169.225, 2195.42],
-  press: [[0, 'down', 'Control'], [74.196, 'down', 'Shift'], [242.174, 'down', 'z'], [266.711, 'up', 'Control'], [310.145, 'up', 'z'], [349.908, 'up', 'Shift']],
+  typeUps: [93.693, 160.601, 163.587, 397.27, 476.726, 970.07, 985.174, 1091.661, 1178.239, 1671.725, 1697.921],
+  press: [[0, 'down', 'Control'], [74.196, 'down', 'Shift'], [242.174, 'down', 'z'], [267.111, 'up', 'Control'], [310.546, 'up', 'z'], [350.309, 'up', 'Shift']],
   // Per OS in OSES order: the wheel is what the OS changes.
   wheelMouse: [
     [10, [['down', 330], ['up', 8318.707]], 0, 800, 14078.601],
@@ -98,9 +98,9 @@ describe('planners', () => {
   })
 
   it('presses what a key needs', () => {
-    expect(keys(planPress('A', makeRng(3)))).toEqual([[0, 'down', 'Shift'], [74.196, 'down', 'A'], [130.144, 'up', 'Shift'], [199.231, 'up', 'A']])
+    expect(keys(planPress('A', makeRng(3)))).toEqual([[0, 'down', 'Shift'], [74.196, 'down', 'A'], [130.88, 'up', 'Shift'], [199.967, 'up', 'A']])
     expect(keys(planPress('Control++', makeRng(3))).map((s) => s[2])).toEqual(['Control', 'Shift', '+', 'Control', '+', 'Shift'])
-    expect(keys(planSelectAll(makeRng(3), { os: 'macos' }))).toEqual([[0, 'down', 'Meta'], [74.196, 'down', 'a'], [130.144, 'up', 'Meta'], [199.231, 'up', 'a']])
+    expect(keys(planSelectAll(makeRng(3), { os: 'macos' }))).toEqual([[0, 'down', 'Meta'], [74.196, 'down', 'a'], [130.88, 'up', 'Meta'], [199.967, 'up', 'a']])
     expect(planSelectAll(makeRng(3), { os: 'linux' })[0]).toEqual([0, 'down', 'Control'])
   })
 

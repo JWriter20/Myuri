@@ -6,10 +6,9 @@ import { resolveSettings, type MyuriSettings, type DeepPartial } from './setting
 import { generateProfile } from './profile.js'
 import { boundingBoxOf, scrollOffsetOf, viewportOf, waitForElement } from './page.js'
 import { FOCUSED_FIELD_JS, onSelector } from './page-functions.js'
-import { Actions, type Host, type Step } from './actions.js'
+import { Actions, type Host, type Step, wheelScaleFrom } from './actions.js'
 import { getRandomBoxPoint, getBetterStartingPosition, isPointExcluded } from './geometry.js'
 import { dragCarrySpeed, dragEndMs, dragStartMs, preClickDwellMs } from './motion/click-model.js'
-import { wheelSteps } from './plan.js'
 import { primaryModifier, type Os } from './target-os.js'
 import { HumanTyper, type TyperInput } from './typing/typer.js'
 import type {
@@ -89,12 +88,10 @@ class DriverHost implements Host<string> {
   }
 }
 
-/** The smart actions with the Cursor's options: where in a box to press, and a calibrated wheel. */
+/** The smart actions with the Cursor's options: where in a box to press, and a wheel calibrated on the page's scroll too. */
 class CursorActions extends Actions<string> {
   /** Padding and boxes to avoid when choosing a point, for the action under way. */
   boxOptions: (BoxOptions & { exclude?: BoundingBox[] }) | undefined = undefined
-  /** Wheel px per page px, calibrated on the first page scroll (drivers and DPRs scale a delta). */
-  private scrollMultiplier: number | null = null
 
   get sinceMove(): number {
     return this.host.now() - this.movedAt
@@ -111,16 +108,14 @@ class CursorActions extends Actions<string> {
 
   protected override async defaultWheel(dx: number, dy: number): Promise<void> {
     const host = this.host as DriverHost
-    const m = this.scrollMultiplier ?? 1
-    const steps = wheelSteps(dx * m, dy * m, this.rng, this.os, this.wheelSpec())
-    const dispatched = steps.reduce((sum, step) => sum + (step[0] === 'wheel' ? step[2] : 0), 0)
+    const { steps, sent } = this.wheelPlan(dx, dy)
     const pre = await scrollOffsetOf(host.driver)
     await this.play(steps)
     await host.landed()
+    this.wheelSent = sent
     const moved = (await this.settle(pre)) - pre
     // Clamped: a first scroll cut short by the end of the page would inflate every later one.
-    if (this.scrollMultiplier == null && Math.abs(dispatched) > 10 && Math.abs(moved) > 10)
-      this.scrollMultiplier = Math.min(3, Math.max(0.3, Math.round((dispatched / moved) * 100) / 100))
+    if (this.wheelScale == null) this.wheelScale = wheelScaleFrom(sent, moved)
   }
 
   /** The page's scroll offset once it stops moving (a container scroll leaves it still). */

@@ -39,6 +39,25 @@ def test_notched_scroll_to_a_target():
     assert 1400 < statistics.median(durations) < 2600
 
 
+
+def test_notched_stroke_scale_shrinks_a_flick():
+    # A page that moves 132 px a notch wants ~0.76 of the notches a flick.
+    def strokes(stroke_scale):
+        out = []
+        for seed in range(40):
+            notches = 0
+            for e in generate_wheel_path(6800, make_rng(seed), stroke_scale=stroke_scale):
+                notches += abs(e.delta_y) // 100
+                if e.delta_time >= 40:
+                    out.append(notches)
+                    notches = 0
+        return statistics.median(out)
+
+    assert 0.6 < strokes(0.76) / strokes(1) < 0.9
+    path = [[e.delta_time, e.delta_y] for e in generate_wheel_path(1700, make_rng(3), stroke_scale=0.76)]
+    # js: generateWheelPath(1700, makeRng(3), { strokeScale: 0.76 })
+    assert path == [[17, 100], [16, 100], [17, 100], [17, 100], [16, 100], [17, 100], [33, 100], [84, 100], [16, 300], [17, 200], [17, 200], [400, 100], [83, 100]]
+
 def test_notched_short_scroll_is_nudged():
     gaps = []
     for seed in range(200):

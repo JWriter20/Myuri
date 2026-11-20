@@ -14,7 +14,9 @@
  *            + BIGRAM * (log10 share(prev, cur) - mean)   letters only
  *            + same finger / repeated key / row jump      QWERTY touch typing
  *            + Shift (when cur needs Shift and prev did not)
- *            + context (word start, punctuation, digits, noticing a typo, ...)
+ *            + context (word start, punctuation, digits, noticing a typo, ...;
+ *              common punctuation has a lighter context of its own, and only
+ *              SHIFTED_PUNCT_SHARE of it with Shift)
  *            + noise (normal core + an occasional pause) + slow speed drift
  *
  * then scales every gap so the mean matches the requested WPM. Hold times
@@ -40,6 +42,15 @@ const REPEAT = 0.178
 const ROW_JUMP = 0.04
 /** Gap before a key that needs Shift (the Shift press is inside this gap). */
 const SHIFTED = 0.976
+/**
+ * Share of the punctuation context kept on top of SHIFTED for a shifted common
+ * mark: the reach for Shift and the mark overlap. A letter to '@', ':', '?' or
+ * '!' was recorded at ~3-4.7x a letter gap (median ~4.3x); the full sum would be 5.3x.
+ */
+const SHIFTED_PUNCT_SHARE = 0.5
+
+/** Punctuation common in prose, addresses and URLs, which people type nearly in stride. */
+const COMMON_PUNCT = new Set([...".,'-/@:;?!"])
 
 const CONTEXT = {
   inWord: 0,
@@ -51,6 +62,12 @@ const CONTEXT = {
   digitRun: 0.301,
   toPunct: 1.045,
   fromPunct: 1.316,
+  // Common punctuation (COMMON_PUNCT) on its own: the fit above is pulled up by
+  // rare symbols ('$', '#', '%') and by digits on either side of a '-'. Into a
+  // common mark the recordings give ~2-2.5x a letter gap (the same typist, five
+  // machines, 34 pairs), and out of a '.' or ',' into a letter about 1-1.5x.
+  toCommonPunct: 0.833,
+  fromCommonPunct: 0.223,
   bsNotice: 1.378,
   bsRepeat: 0.449,
   afterBs: 0.657,
@@ -207,14 +224,17 @@ function contextOf(prev: Stroke, cur: Stroke): Context {
   if (p === ' ' || p === 'Enter' || p === 'Tab') return 'wordStart'
   if (cur.insert) return 'toPunct'
   if (isDigit(c)) return isDigit(p) ? 'digitRun' : 'toDigit'
-  if (c.length === 1 && !isAlnum(c)) return 'toPunct'
+  if (c.length === 1 && !isAlnum(c)) return COMMON_PUNCT.has(c) ? 'toCommonPunct' : 'toPunct'
+  if (COMMON_PUNCT.has(p)) return 'fromCommonPunct'
   if (prev.insert || (p.length === 1 && !isAlnum(p)) || isDigit(p)) return 'fromPunct'
   return 'inWord'
 }
 
 /** Deterministic part of log(gap) for the pair (prev -> cur). */
 function logGapMean(prev: Stroke, cur: Stroke): number {
-  let mu = BASE + CONTEXT[contextOf(prev, cur)]
+  const context = contextOf(prev, cur)
+  const shifted = !cur.insert && needsShift(cur.key) && !needsShift(prev.key)
+  let mu = BASE + CONTEXT[context] * (shifted && context === 'toCommonPunct' ? SHIFTED_PUNCT_SHARE : 1)
   if (cur.insert || prev.insert) return mu
   const a = physical(prev.key)
   const b = physical(cur.key)
@@ -227,7 +247,7 @@ function logGapMean(prev: Stroke, cur: Stroke): number {
   if (fa !== undefined && fa === fb && a !== b) mu += SAME_FINGER
   if (a === b && a.length === 1) mu += REPEAT
   if (ROW[a] !== undefined && ROW[b] !== undefined) mu += ROW_JUMP * Math.abs(ROW[a] - ROW[b])
-  if (needsShift(cur.key) && !needsShift(prev.key)) mu += SHIFTED
+  if (shifted) mu += SHIFTED
   return mu
 }
 

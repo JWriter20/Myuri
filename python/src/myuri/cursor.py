@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Iterator, List, Optional, Union
 
-from .actions import Actions, Flow
+from .actions import Actions, Flow, wheel_scale_from
 from .drivers.base import Driver, _accepts_positional, define_driver  # noqa: F401 (re-exported convenience)
 from .drivers.playwright import driver_from_page
 from .geometry import get_better_starting_position, get_random_box_point, is_point_excluded
@@ -16,7 +16,6 @@ from .motion.click_model import drag_carry_speed, drag_end_ms, drag_start_ms, pr
 from .options import ClickOptions, DragOptions, MoveOptions, MoveToOptions, ScrollOptions, TypeOptions
 from .page import bounding_box_of, scroll_offset_of, viewport_of, wait_for_element
 from .page_functions import FOCUSED_FIELD_JS, on_selector
-from .plan import wheel_steps
 from .profile import profile_from_seed
 from .rng import Rng, generate_random_seed, make_rng
 from .target_os import primary_modifier
@@ -102,15 +101,13 @@ class _DriverHost:
 
 
 class _CursorActions(Actions):
-    """The smart actions with the Cursor's options: where in a box to press, and a calibrated wheel."""
+    """The smart actions with the Cursor's options: where in a box to press, and a wheel calibrated on the page's scroll too."""
 
     def __init__(self, host: _DriverHost, rng: Rng, **options: Any) -> None:
         super().__init__(host, rng, asynchronous=True, **options)
         # Padding and boxes to avoid when choosing a point, for the action under way.
         self.box_options: Optional[MoveOptions] = None
         self.exclude: List[BoundingBox] = []
-        # Wheel px per page px, calibrated on the first page scroll (drivers and DPRs scale a delta).
-        self._scroll_multiplier: Optional[float] = None
 
     @property
     def since_move(self) -> float:
@@ -128,16 +125,15 @@ class _CursorActions(Actions):
 
     def _default_wheel(self, dx: float, dy: float) -> Flow:
         host = self.host
-        m = self._scroll_multiplier or 1
-        steps = wheel_steps(dx * m, dy * m, self.rng, os=self.os, spec=self._wheel_spec())
-        dispatched = sum(step[2] for step in steps if step[0] == "wheel")
+        steps, sent = self._wheel_plan(dx, dy)
         pre = yield scroll_offset_of(host.driver)
         yield from self.play(steps)
         yield host.landed()
+        self._wheel_sent = sent
         moved = (yield self._settle(pre)) - pre
         # Clamped: a first scroll cut short by the end of the page would inflate every later one.
-        if self._scroll_multiplier is None and abs(dispatched) > 10 and abs(moved) > 10:
-            self._scroll_multiplier = min(3.0, max(0.3, round((dispatched / moved) * 100) / 100))
+        if self.wheel_scale is None:
+            self.wheel_scale = wheel_scale_from(sent, moved)
 
     async def _settle(self, previous: float) -> float:
         """The page's scroll offset once it stops moving (a container scroll leaves it still)."""

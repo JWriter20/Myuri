@@ -71,6 +71,8 @@ export {
   LANDING_MS,
   RETRY_MS,
   SCROLL_PASSES,
+  WHEEL_PROBE,
+  WHEEL_SCALE_RANGE,
   type Host,
   type Step,
   type Button,
