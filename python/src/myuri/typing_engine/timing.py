@@ -33,6 +33,11 @@ SAME_FINGER = 0.289
 REPEAT = 0.178
 ROW_JUMP = 0.04
 SHIFTED = 0.976
+# Share of the punctuation context kept on top of SHIFTED for a shifted common mark.
+SHIFTED_PUNCT_SHARE = 0.5
+
+# Punctuation common in prose, addresses and URLs, which people type nearly in stride.
+COMMON_PUNCT = frozenset(".,'-/@:;?!")
 
 CONTEXT: Dict[str, float] = {
     "inWord": 0.0,
@@ -43,6 +48,9 @@ CONTEXT: Dict[str, float] = {
     "digitRun": 0.301,
     "toPunct": 1.045,
     "fromPunct": 1.316,
+    # Common punctuation (COMMON_PUNCT) on its own; see timing.ts.
+    "toCommonPunct": 0.833,
+    "fromCommonPunct": 0.223,
     "bsNotice": 1.378,
     "bsRepeat": 0.449,
     "afterBs": 0.657,
@@ -172,7 +180,9 @@ def context_of(prev: Stroke, cur: Stroke) -> str:
     if _is_digit(c):
         return "digitRun" if _is_digit(p) else "toDigit"
     if len(c) == 1 and not _is_alnum(c):
-        return "toPunct"
+        return "toCommonPunct" if c in COMMON_PUNCT else "toPunct"
+    if p in COMMON_PUNCT:
+        return "fromCommonPunct"
     if prev.insert or (len(p) == 1 and not _is_alnum(p)) or _is_digit(p):
         return "fromPunct"
     return "inWord"
@@ -180,7 +190,9 @@ def context_of(prev: Stroke, cur: Stroke) -> str:
 
 def log_gap_mean(prev: Stroke, cur: Stroke) -> float:
     """Deterministic part of log(gap) for the pair (prev -> cur)."""
-    mu = BASE + CONTEXT[context_of(prev, cur)]
+    context = context_of(prev, cur)
+    shifted = not cur.insert and needs_shift(cur.key) and not needs_shift(prev.key)
+    mu = BASE + CONTEXT[context] * (SHIFTED_PUNCT_SHARE if shifted and context == "toCommonPunct" else 1)
     if cur.insert or prev.insert:
         return mu
     a, b = _physical(prev.key), _physical(cur.key)
@@ -194,7 +206,7 @@ def log_gap_mean(prev: Stroke, cur: Stroke) -> float:
         mu += REPEAT
     if a in ROW and b in ROW:
         mu += ROW_JUMP * abs(ROW[a] - ROW[b])
-    if needs_shift(cur.key) and not needs_shift(prev.key):
+    if shifted:
         mu += SHIFTED
     return mu
 

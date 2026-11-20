@@ -54,6 +54,20 @@ SCROLL_PASSES = 3
 """Scroll plans played before an element is taken as in view (one that moves as it scrolls needs more than one)."""
 
 LANDING_MS = (50, 1000)
+
+# Until the wheel is calibrated, a scroll into view of more than ``min_px`` page
+# px turns only ``share`` of it first and measures how far the page moved, so
+# the rest lands where it should (see actions.ts).
+WHEEL_PROBE = {"min_px": 400, "share": 0.5}
+# The range a learned wheel scale (wheel px per page px) is clamped to.
+WHEEL_SCALE_RANGE = (0.3, 3.0)
+
+
+def wheel_scale_from(sent: float, moved: float) -> Optional[float]:
+    """A wheel scale learned from ``sent`` wheel px moving the page ``moved`` px, or None when they don't say."""
+    if not (abs(sent) > 10 and abs(moved) > 10) or (sent > 0) != (moved > 0):
+        return None
+    return min(WHEEL_SCALE_RANGE[1], max(WHEEL_SCALE_RANGE[0], _js_round((sent / moved) * 100) / 100))
 """How often a wheel's scroll is checked for having landed, and how long it may take."""
 
 _BUTTONS = ("left", "right", "middle")
@@ -217,6 +231,13 @@ class Actions:
         self.speed_factor: float = settings.scroll.speed_factor
         self.speed_irregularity: float = settings.scroll.realism.speed_irregularity
         self.scroll_passes: int = SCROLL_PASSES
+        # Wheel px per page px, learned on the first scroll into view (browsers,
+        # drivers and DPRs move the page more or less than a delta asks); None
+        # until then. The default wheel part divides by it, and sizes a flick's
+        # notches so it covers the page px a recorded one does.
+        self.wheel_scale: Optional[float] = None
+        # Wheel px the default wheel part last sent; NaN when a replaced part sent them.
+        self._wheel_sent = math.nan
         # Where the cursor is, in page px; None until known. Before the first
         # move it is only where the person's hand is taken to be.
         self.cursor: Optional[Vector] = None
@@ -448,14 +469,28 @@ class Actions:
         return (yield self.host.evaluate(target, HIT_TEST_JS, {"x": x - offset[0], "y": y - offset[1], "pressing": pressing}))
 
     def _default_into_view(self, target: Any) -> Flow:
-        for _ in range(self.scroll_passes):
+        i = 0
+        probed = False
+        while i < self.scroll_passes:
             plan = yield from self.measure(target)
             if plan is None or plan["inView"] or abs(plan["deltaY"]) < 1:
                 return None
             # Over the scroller the plan chose, so the wheel scrolls it.
             yield from self._part("move", plan["hoverX"], plan["hoverY"])
-            yield from self._part("wheel", 0, plan["deltaY"])
+            probe = not probed and self.wheel_scale is None and abs(plan["deltaY"]) > WHEEL_PROBE["min_px"]
+            probed = probed or probe
+            self._wheel_sent = math.nan
+            yield from self._part("wheel", 0, plan["deltaY"] * WHEEL_PROBE["share"] if probe else plan["deltaY"])
             yield from self._landed(target)
+            if self.wheel_scale is None:
+                # The target moves up the page as the page scrolls down. A scroller
+                # that ran out (no move left in the plan) may have cut the scroll short.
+                after = yield from self.measure(target)
+                if after is not None and abs(after["deltaY"]) >= 1:
+                    self.wheel_scale = wheel_scale_from(self._wheel_sent, plan["box"]["y"] - after["box"]["y"])
+            # The probe is a person's first flick, not one of the passes.
+            if not probe:
+                i += 1
         return None
 
     def _landed(self, target: Any) -> Flow:
@@ -474,10 +509,18 @@ class Actions:
 
     def _wheel_spec(self) -> WheelSpec:
         """How the wheel turns for the scroll under way."""
-        return WheelSpec(self.device, self.settings.scroll.wheel, self.speed_irregularity, self.speed_factor)
+        return WheelSpec(self.device, self.settings.scroll.wheel, self.speed_irregularity, self.speed_factor, self.wheel_scale or 1.0)
+
+    def _wheel_plan(self, dx: float, dy: float) -> Tuple[List[Tuple], float]:
+        """The wheel steps for a scroll of (``dx``, ``dy``) page px, with the wheel px they send."""
+        m = self.wheel_scale or 1
+        steps = wheel_steps(dx * m, dy * m, self.rng, os=self.os, spec=self._wheel_spec())
+        return steps, sum(step[2] for step in steps if step[0] == "wheel")
 
     def _default_wheel(self, dx: float, dy: float) -> Flow:
-        return (yield from self.play(wheel_steps(dx, dy, self.rng, os=self.os, spec=self._wheel_spec())))
+        steps, sent = self._wheel_plan(dx, dy)
+        yield from self.play(steps)
+        self._wheel_sent = sent
 
     def _default_type(self, text: str) -> Flow:
         t = self.settings.typing

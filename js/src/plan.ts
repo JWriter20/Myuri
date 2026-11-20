@@ -212,6 +212,8 @@ export interface WheelSpec {
   speedIrregularity: number
   /** Divides every time in the scroll (see `settings.scroll.speedFactor`). */
   speedFactor: number
+  /** Wheel px a page px takes, as Actions learns it: sizes a flick's notches (see `WheelOptions.strokeScale`). Default 1. */
+  strokeScale?: number
 }
 
 /** Chromium ignores very small wheel deltas, so a trackpad's are sent in batches of at least this many px. */
@@ -225,7 +227,7 @@ const MIN_TRACKPAD_DELTA = 8
 export function wheelWith(distance: number, rng: Rng, spec: WheelSpec): { events: [number, number][]; end: number; total: number } {
   const mouse = spec.device === 'mouse'
   const model = mouse
-    ? generateWheelPath(distance, rng, spec.wheel)
+    ? generateWheelPath(distance, rng, { ...spec.wheel, strokeScale: spec.strokeScale })
     : scrollModel.generateScrollPath(distance, rng, undefined, spec.speedIrregularity)
   const raw: [number, number][] = []
   let end = 0

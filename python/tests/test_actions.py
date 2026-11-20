@@ -1,7 +1,8 @@
 """The smart actions on a fake host with a virtual clock (mirror of ``js/test/actions.spec.ts``)."""
 import pytest
 
-from myuri import RETRY_MS, Actions, Missed, make_rng
+from myuri import RETRY_MS, WHEEL_SCALE_RANGE, Actions, Missed, make_rng
+from myuri.actions import wheel_scale_from
 from myuri.page_functions import HIT_TEST_JS, SCROLL_PLAN_JS
 
 BOX = {"x": 100, "y": 400, "width": 120, "height": 40}
@@ -225,3 +226,57 @@ def test_scrolls_the_element_to_settings_scroll_finish_position():
     a = actions(host, settings={"scroll": {"finish_position": 0.2}})
     a.run(a.click("#t"))
     assert any(arg and arg.get("finishPosition") == 0.2 for arg in host.args)
+
+
+class ScrollingHost(FakeHost):
+    """A page that scrolls ``ratio`` px for each wheel px, as Camoufox moves
+    132 px for a 100 px notch: the target sits at ``top`` in the document and
+    wants to be 300 px down the viewport."""
+
+    def __init__(self, ratio, top=2200):
+        super().__init__()
+        self.ratio, self.top, self.scroll_y, self.peak = ratio, top, 0.0, 0.0
+
+    def wheel(self, dx, dy):
+        super().wheel(dx, dy)
+        self.scroll_y += dy * self.ratio
+        self.peak = max(self.peak, self.scroll_y)
+
+    def evaluate(self, target, fn, arg):
+        if fn != SCROLL_PLAN_JS:
+            return super().evaluate(target, fn, arg)
+        at = {**BOX, "y": self.top - self.scroll_y}
+        delta_y = at["y"] - 300
+        return {**BELOW, "inView": abs(delta_y) < 60, "deltaY": delta_y, "box": at, "region": dict(at)}
+
+
+def test_wheel_scale_from_reads_the_wheel_px_a_page_px_takes():
+    assert wheel_scale_from(700, 924) == 0.76
+    assert wheel_scale_from(100, 1000) == WHEEL_SCALE_RANGE[0]
+    assert wheel_scale_from(1000, 100) == WHEEL_SCALE_RANGE[1]
+    assert wheel_scale_from(700, -924) is None
+    assert wheel_scale_from(700, 0) is None
+    assert wheel_scale_from(float("nan"), 924) is None
+
+
+def test_probes_a_long_scroll_then_lands_without_overshooting_a_fast_page():
+    for seed in range(1, 11):
+        host = ScrollingHost(1.32)
+        a = actions(host, seed)
+        a.run(a.click("#t"))
+        assert a.wheel_scale == pytest.approx(1 / 1.32, abs=0.05)
+        goal = host.top - 300
+        assert abs(host.scroll_y - goal) < 60
+        assert host.peak - goal < 60
+
+
+def test_keeps_the_scale_it_read_for_later_scrolls():
+    host = ScrollingHost(1.32)
+    a = actions(host, 3)
+    a.run(a.click("#t"))
+    scale = a.wheel_scale
+    host.calls.clear()
+    a.run(a.wheel(0, 1000))
+    sent = sum(c[2] for c in host.calls if c[0] == "wheel")
+    assert a.wheel_scale == scale
+    assert abs(sent * 1.32 - 1000) < 140

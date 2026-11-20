@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { Actions, Missed, RETRY_MS, type Host, type Step } from '../src/actions.js'
+import { Actions, Missed, RETRY_MS, WHEEL_SCALE_RANGE, wheelScaleFrom, type Host, type Step } from '../src/actions.js'
 import { HIT_TEST_JS } from '../src/page-functions.js'
 import { SCROLL_PLAN_JS, type ScrollPlan } from '../src/scroll-plan.js'
 import { makeRng } from '../src/rng.js'
@@ -228,5 +228,64 @@ describe('Actions settings', () => {
     const host = new FakeHost([below, inView])
     await actions(host, 1, { settings: { scroll: { finishPosition: 0.2 } } }).click('#t')
     expect(host.args).toContainEqual(expect.objectContaining({ finishPosition: 0.2 }))
+  })
+})
+
+/**
+ * A page that scrolls `ratio` px for each wheel px, as Camoufox moves 132 px
+ * for a 100 px notch: the target sits at `top` in the document and wants to
+ * be 300 px down the viewport.
+ */
+class ScrollingHost extends FakeHost {
+  scrollY = 0
+  peak = 0
+  constructor(readonly ratio: number, readonly top = 2200) {
+    super()
+  }
+  wheel(dx: number, dy: number) {
+    super.wheel(dx, dy)
+    this.scrollY += dy * this.ratio
+    this.peak = Math.max(this.peak, this.scrollY)
+  }
+  evaluate<A, R>(target: string, fn: (el: any, arg: A) => R, arg?: A): R {
+    if (fn !== (SCROLL_PLAN_JS as unknown)) return super.evaluate(target, fn, arg)
+    const at = { ...box, y: this.top - this.scrollY }
+    const deltaY = at.y - 300
+    return { ...below, inView: Math.abs(deltaY) < 60, deltaY, box: at, region: at } as R
+  }
+}
+
+describe('wheel calibration', () => {
+  it('reads the wheel px a page px takes, clamped and only from a scroll the right way', () => {
+    expect(wheelScaleFrom(700, 924)).toBe(0.76)
+    expect(wheelScaleFrom(100, 1000)).toBe(WHEEL_SCALE_RANGE[0])
+    expect(wheelScaleFrom(1000, 100)).toBe(WHEEL_SCALE_RANGE[1])
+    expect(wheelScaleFrom(700, -924)).toBeNull()
+    expect(wheelScaleFrom(700, 0)).toBeNull()
+    expect(wheelScaleFrom(Number.NaN, 924)).toBeNull()
+  })
+
+  it('probes a long scroll with a first flick, then lands without overshooting a fast page', async () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const host = new ScrollingHost(1.32)
+      const a = actions(host, seed)
+      await a.click('#t')
+      expect(a.wheelScale).toBeCloseTo(1 / 1.32, 1)
+      const goal = host.top - 300
+      expect(Math.abs(host.scrollY - goal)).toBeLessThan(60)
+      expect(host.peak - goal).toBeLessThan(60)
+    }
+  })
+
+  it('keeps the scale it read for later scrolls', async () => {
+    const host = new ScrollingHost(1.32)
+    const a = actions(host, 3)
+    await a.click('#t')
+    const scale = a.wheelScale
+    host.calls.length = 0
+    await a.wheel(0, 1000)
+    const sent = host.calls.filter((c) => c[0] === 'wheel').reduce((s, c) => s + (c[2] as number), 0)
+    expect(a.wheelScale).toBe(scale)
+    expect(Math.abs(sent * 1.32 - 1000)).toBeLessThan(140)
   })
 })

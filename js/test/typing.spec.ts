@@ -246,6 +246,41 @@ describe('KeystrokeTiming', () => {
     expect(g('e', 'Backspace')).toBeGreaterThan(g('Backspace', 'Backspace'))
   })
 
+  // Recorded (the same typist, five machines): a letter into a common mark is
+  // ~2-2.5x a letter gap, into '@', ':', '?' or '!' ~3-4.7x (Shift included),
+  // and out of a '.' or ',' into a letter ~0.9-1.5x.
+  it('types common punctuation about as the recordings do', () => {
+    const text = 'Hi Ada, mail me at ada@example.com. Is it ok? Yes: it works! See x.org/a-b, ok. '.repeat(3)
+    const strokes = strokesForText(text)
+    const isLetter = (k: string) => /^[a-zA-Z]$/.test(k)
+    const isMark = (k: string) => k.length === 1 && !/^[a-zA-Z0-9 ]$/.test(k)
+    const gaps = new Map<string, number[]>()
+    for (let seed = 0; seed < 100; seed++) {
+      const { downAt } = new KeystrokeTiming(80, makeRng(seed)).plan(strokes)
+      const chars = strokes.map((s, i) => [s.key, downAt[i]] as const).filter(([k]) => k.length === 1)
+      for (let i = 1; i < chars.length; i++) {
+        const [a, ta] = chars[i - 1]
+        const [b, tb] = chars[i]
+        const pair = isLetter(a) && isLetter(b) ? 'LL' : isLetter(a) && isMark(b) ? `L${b}` : isMark(a) && isLetter(b) ? `${a}L` : null
+        if (pair) gaps.set(pair, [...(gaps.get(pair) ?? []), tb - ta])
+      }
+    }
+    const median = (v: number[]) => [...v].sort((x, y) => x - y)[v.length >> 1]
+    const ratio = (pair: string) => median(gaps.get(pair)!) / median(gaps.get('LL')!)
+    // Recorded (the same typist, five machines): a letter into a common mark is
+    // ~2-2.5x a letter gap, into '@', ':', '?' or '!' ~3-4.7x (Shift included),
+    // and out of a mark into a letter ~0.9-1.5x.
+    for (const p of [...',.-/']) expect(ratio(`L${p}`), p).toBeGreaterThan(2)
+    for (const p of [...',.-/']) expect(ratio(`L${p}`), p).toBeLessThan(2.5)
+    for (const p of [...'@:?!']) expect(ratio(`L${p}`), p).toBeGreaterThan(3)
+    for (const p of [...'@:?!']) expect(ratio(`L${p}`), p).toBeLessThan(4.7)
+    for (const p of [...'.-/@']) expect(ratio(`${p}L`), p).toBeGreaterThan(0.9)
+    for (const p of [...'.-/@']) expect(ratio(`${p}L`), p).toBeLessThan(1.5)
+    // A rare symbol keeps the slower fit.
+    const g = (a: string, b: string) => _internals.logGapMean({ key: a }, { key: b })
+    expect(g('e', '$')).toBeGreaterThan(g('e', '@'))
+  })
+
   it('is deterministic for a seed', () => {
     const a = new KeystrokeTiming(80, makeRng(42)).plan(strokesForText('Same seed.'))
     const b = new KeystrokeTiming(80, makeRng(42)).plan(strokesForText('Same seed.'))

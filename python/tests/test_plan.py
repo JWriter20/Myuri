@@ -53,8 +53,8 @@ GOLDEN = {
     "move_short": [11, 501.518, 372.564, 669.904],
     "click": {"dwell_ms": 600, "presses": [(0, 92), (162, 246), (323, 425)]},
     # plan_type('Hi, Bob!'): the release time of each key.
-    "type_ups": [92.695, 159.955, 162.228, 447.436, 525.877, 1008.267, 1024.293, 1129.194, 1214.201, 2169.225, 2195.42],
-    "press": [[0, "down", "Control"], [74.196, "down", "Shift"], [242.174, "down", "z"], [266.711, "up", "Control"], [310.145, "up", "z"], [349.908, "up", "Shift"]],
+    "type_ups": [93.693, 160.601, 163.587, 397.27, 476.726, 970.07, 985.174, 1091.661, 1178.239, 1671.725, 1697.921],
+    "press": [[0, "down", "Control"], [74.196, "down", "Shift"], [242.174, "down", "z"], [267.111, "up", "Control"], [310.546, "up", "z"], [350.309, "up", "Shift"]],
     # Per OS in OSES order: the wheel is what the OS changes.
     "wheel_mouse": [
         [10, [["down", 330], ["up", 8318.707]], 0, 800, 14078.601],
@@ -92,9 +92,9 @@ def test_planners(i, os):
 
 
 def test_presses_what_a_key_needs():
-    assert keys(plan_press("A", make_rng(3))) == [[0, "down", "Shift"], [74.196, "down", "A"], [130.144, "up", "Shift"], [199.231, "up", "A"]]
+    assert keys(plan_press("A", make_rng(3))) == [[0, "down", "Shift"], [74.196, "down", "A"], [130.88, "up", "Shift"], [199.967, "up", "A"]]
     assert [s[2] for s in plan_press("Control++", make_rng(3))] == ["Control", "Shift", "+", "Control", "+", "Shift"]
-    assert keys(plan_select_all(make_rng(3), os="macos")) == [[0, "down", "Meta"], [74.196, "down", "a"], [130.144, "up", "Meta"], [199.231, "up", "a"]]
+    assert keys(plan_select_all(make_rng(3), os="macos")) == [[0, "down", "Meta"], [74.196, "down", "a"], [130.88, "up", "Meta"], [199.967, "up", "a"]]
     assert plan_select_all(make_rng(3), os="linux")[0] == (0, "down", "Control")
 
 

@@ -49,6 +49,27 @@ describe('mouse wheel model', () => {
     expect(median(durations)).toBeLessThan(2600)
   })
 
+  it('notched: strokeScale shrinks a flick to cover the page px a recorded one does', () => {
+    const strokes = (strokeScale: number) => {
+      const out: number[] = []
+      for (let seed = 0; seed < 40; seed++) {
+        let notches = 0
+        for (const e of generateWheelPath(6800, makeRng(seed), { strokeScale })) {
+          notches += Math.abs(e.deltaY) / 100
+          if (e.deltaTime >= 40) {
+            out.push(notches)
+            notches = 0
+          }
+        }
+      }
+      return median(out)
+    }
+    // A page that moves 132 px a notch wants ~0.76 of the notches a flick.
+    expect(strokes(0.76) / strokes(1)).toBeGreaterThan(0.6)
+    expect(strokes(0.76) / strokes(1)).toBeLessThan(0.9)
+    expect(generateWheelPath(6800, makeRng(3), { strokeScale: 1 })).toEqual(generateWheelPath(6800, makeRng(3)))
+  })
+
   it('notched: a scroll of a few notches is nudged, a lone notch first', () => {
     const gaps: number[] = []
     for (let seed = 0; seed < 200; seed++) {

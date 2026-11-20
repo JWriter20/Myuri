@@ -151,6 +151,9 @@ hand it to `create_cursor(driver=...)`.
    - Common pairs are fast (`th` beats `tk`).
    - Same-finger and row jumps are slow.
    - Word starts, punctuation, digits and noticing a typo all pause.
+   - Common punctuation (`. , ' - / @ : ; ? !`) is typed nearly in stride, as recorded: a
+     gap into it is about 2 to 2.5 letter gaps (about 4 with Shift, for `@ : ? !`), and a
+     gap out of `.` or `,` into a letter about 1 to 1.5. Rarer symbols such as `$` pause longer.
    - About one key in 17 waits longer, like a person hesitating. These pauses are a little
      rarer and shorter than in the recordings, where they read as stalls.
      `typing.pauses` scales how often (`rate`) and how long (`length`) they are.
@@ -186,7 +189,13 @@ With `device: 'mouse'`, `scroll.wheel.style` sets how the wheel reports:
   keeps the speed, so the next stroke starts where the last one left off.
 
 A wheel can't move an exact number of pixels, so mouse scrolls land on the nearest whole notch.
-The cursor calibrates against the distance it actually sent.
+A browser can also scroll more or less than a notch's pixels (Firefox in Camoufox moves about
+132 px for a 100 px notch), which would overshoot the target and flick faster than a person.
+So the first scroll into view of more than 400 px flicks about half the way, reads how far the
+page moved, and keeps the ratio as `wheelScale` (`wheel_scale` in Python), clamped to 0.3 to 3.
+Later wheels send that many wheel px per page px, and each stroke flicks that share of its
+notches, so a stroke covers the page distance a recorded one did. On an `Actions`, set
+`wheelScale` yourself to skip the probe.
 
 ```ts
 const cursor = createCursor(page, { settings: { scroll: { device: 'mouse' } } })

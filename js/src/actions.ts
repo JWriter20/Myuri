@@ -29,7 +29,7 @@
 import { getRandomBoxPoint, shouldOvershoot } from './geometry.js'
 import type { BoundingBox, Vector } from './math.js'
 import { HIT_TEST_JS, type HitTestArgs } from './page-functions.js'
-import { CLICK_RUN_MS, type KeyStep, moveWith, planClick, planPoint, planPress, planType, wheelSteps, wheelStyleFor, type WheelSpec } from './plan.js'
+import { CLICK_RUN_MS, type KeyStep, moveWith, planClick, planPoint, planPress, planType, wheelSteps, wheelStyleFor, type WheelSpec, type WheelStep } from './plan.js'
 import type { Rng } from './rng.js'
 import { SCROLL_EDGE, SCROLL_PAD, SCROLL_PLAN_JS, type ScrollPlan, type ScrollPlanArgs } from './scroll-plan.js'
 import { type DeepPartial, type MyuriSettings, resolveSettings } from './settings.js'
@@ -99,6 +99,23 @@ export const SCROLL_PASSES = 3
 
 /** How often a wheel's scroll is checked for having landed, and how long it may take. */
 export const LANDING_MS = [50, 1000] as const
+
+/**
+ * Until the wheel is calibrated, a scroll into view of more than `minPx` page
+ * px turns only `share` of it first and measures how far the page moved, so
+ * the rest lands where it should. A person flicks, sees how far the page went
+ * and flicks again; a browser whose notch moves the page 132 px rather than
+ * 100 would otherwise overshoot by a third.
+ */
+export const WHEEL_PROBE = { minPx: 400, share: 0.5 } as const
+/** The range a learned wheel scale (wheel px per page px) is clamped to. */
+export const WHEEL_SCALE_RANGE = [0.3, 3] as const
+
+/** A wheel scale learned from `sent` wheel px moving the page `moved` px, or null when they don't say. */
+export function wheelScaleFrom(sent: number, moved: number): number | null {
+  if (!(Math.abs(sent) > 10 && Math.abs(moved) > 10) || Math.sign(sent) !== Math.sign(moved)) return null
+  return Math.min(WHEEL_SCALE_RANGE[1], Math.max(WHEEL_SCALE_RANGE[0], Math.round((sent / moved) * 100) / 100))
+}
 
 const BUTTONS: Button[] = ['left', 'right', 'middle']
 
@@ -203,6 +220,15 @@ export class Actions<T = unknown> {
   speedFactor: number
   speedIrregularity: number
   scrollPasses = SCROLL_PASSES
+  /**
+   * Wheel px per page px, learned on the first scroll into view (browsers,
+   * drivers and DPRs move the page more or less than a delta asks); null until
+   * then. The default wheel part divides by it, and sizes a flick's notches
+   * so it covers the page px a recorded one does.
+   */
+  wheelScale: number | null = null
+  /** Wheel px the default wheel part last sent; NaN when a replaced part sent them. */
+  protected wheelSent = NaN
   /** Where the cursor is, in page px; null until known. Before the first move it is only where the person's hand is taken to be. */
   cursor: Vector | null = null
   protected placed = false
@@ -439,13 +465,25 @@ export class Actions<T = unknown> {
   }
 
   protected async defaultIntoView(target: T): Promise<void> {
-    for (let i = 0; i < this.scrollPasses; i++) {
+    let probed = false
+    for (let i = 0; i < this.scrollPasses; ) {
       const plan = await this.measure(target)
       if (!plan || plan.inView || Math.abs(plan.deltaY) < 1) return
       // Over the scroller the plan chose, so the wheel scrolls it.
       await this.part('move', [plan.hoverX, plan.hoverY])
-      await this.part('wheel', [0, plan.deltaY])
+      const probe: boolean = !probed && this.wheelScale == null && Math.abs(plan.deltaY) > WHEEL_PROBE.minPx
+      probed ||= probe
+      this.wheelSent = NaN
+      await this.part('wheel', [0, probe ? plan.deltaY * WHEEL_PROBE.share : plan.deltaY])
       await this.landed(target)
+      if (this.wheelScale == null) {
+        // The target moves up the page as the page scrolls down. A scroller
+        // that ran out (no move left in the plan) may have cut the scroll short.
+        const after = await this.measure(target)
+        if (after && Math.abs(after.deltaY) >= 1) this.wheelScale = wheelScaleFrom(this.wheelSent, plan.box.y - after.box.y)
+      }
+      // The probe is a person's first flick, not one of the passes.
+      if (!probe) i++
     }
   }
 
@@ -467,11 +505,26 @@ export class Actions<T = unknown> {
 
   /** How the wheel turns for the scroll under way. */
   protected wheelSpec(): WheelSpec {
-    return { device: this.device, wheel: this.settings.scroll.wheel, speedIrregularity: this.speedIrregularity, speedFactor: this.speedFactor }
+    return {
+      device: this.device,
+      wheel: this.settings.scroll.wheel,
+      speedIrregularity: this.speedIrregularity,
+      speedFactor: this.speedFactor,
+      strokeScale: this.wheelScale ?? 1,
+    }
+  }
+
+  /** The wheel steps for a scroll of (`dx`, `dy`) page px, with the wheel px they send. */
+  protected wheelPlan(dx: number, dy: number): { steps: WheelStep[]; sent: number } {
+    const m = this.wheelScale ?? 1
+    const steps = wheelSteps(dx * m, dy * m, this.rng, this.os, this.wheelSpec())
+    return { steps, sent: steps.reduce((sum, step) => sum + (step[0] === 'wheel' ? step[2] : 0), 0) }
   }
 
   protected async defaultWheel(dx: number, dy: number): Promise<void> {
-    await this.play(wheelSteps(dx, dy, this.rng, this.os, this.wheelSpec()))
+    const { steps, sent } = this.wheelPlan(dx, dy)
+    await this.play(steps)
+    this.wheelSent = sent
   }
 
   protected async defaultType(text: string): Promise<void> {

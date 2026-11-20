@@ -8,7 +8,8 @@ notches: the finger flicks the wheel through some notches (a stroke), lifts,
 re-grips and flicks again. Two styles:
 
 - ``notched`` (Windows, Linux): one event a notch, each ``px_per_notch``
-  (default 100, which Camoufox turns into exactly one 3-line notch). The page
+  (default 100; ``stroke_scale`` fits a flick's notches to a page that moves
+  more or less than that a notch, so a stroke covers a recorded one's px). The page
   takes a fast flick's notches one display frame at a time, so the notches that
   land in one 60 Hz frame arrive as one event of 2-4 notches.
 - ``macos``: macOS reports the wheel in 20 ms frames and accelerates a fast
@@ -79,7 +80,7 @@ def _lognormal(rng: Rng, mu: float, sd: float) -> float:
     return math.exp(gaussian(rng, mu, sd))
 
 
-def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEvent]:
+def _notched_path(target: float, rng: Rng, px_per_notch: int, stroke_scale: float) -> List[ScrollEvent]:
     sign = _sign(target)
     left = max(1, _js_round(abs(target) / px_per_notch))
     # Each event's [frame, notch count]; the notches of one frame are one event.
@@ -90,7 +91,7 @@ def _notched_path(target: float, rng: Rng, px_per_notch: int) -> List[ScrollEven
         if nudged:
             size = _lognormal(rng, NUDGE_MU, NUDGE_SD) if frames else 1
         else:
-            size = _lognormal(rng, NOTCHES_MU, NOTCHES_SD)
+            size = _lognormal(rng, NOTCHES_MU, NOTCHES_SD) * stroke_scale
         n = min(left, max(1, _js_round(size)))
         duration = min(n * NOTCH_MAX_MS, _clamp(_lognormal(rng, FLICK_MU, FLICK_SD), STROKE_MIN_MS, STROKE_MAX_MS))
         mu, sd = (NUDGE_REGRIP_MU, NUDGE_REGRIP_SD) if nudged else (FLICK_REGRIP_MU, FLICK_REGRIP_SD)
@@ -153,6 +154,7 @@ def generate_wheel_path(
     style: str = "notched",
     px_per_notch: int = 100,
     px_per_line: int = 16,
+    stroke_scale: float = 1.0,
 ) -> List[ScrollEvent]:
     """Plan a mouse-wheel scroll of about ``desired_d`` px.
 
@@ -160,12 +162,17 @@ def generate_wheel_path(
     number of them, at least one; read it back from the events. Each event's
     ``delta_time`` is the wait after it. A request that rounds to 0 px
     returns [].
+
+    ``stroke_scale`` scales the notches of a ``notched`` flick so a flick
+    covers as many page px as a recorded one when a notch moves the page more
+    or less than ``px_per_notch``: pass the wheel px a page px takes (0.76
+    where a 100 px notch moves the page 132 px).
     """
     if _js_round(desired_d) == 0:
         return []
     if style == "macos":
         return _mac_path(desired_d, rng, px_per_line)
-    return _notched_path(desired_d, rng, px_per_notch)
+    return _notched_path(desired_d, rng, px_per_notch, stroke_scale)
 
 
 __all__ = ["generate_wheel_path"]

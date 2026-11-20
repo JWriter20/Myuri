@@ -206,6 +206,8 @@ class WheelSpec:
     speed_irregularity: float
     # Divides every time in the scroll (see ``settings.scroll.speed_factor``).
     speed_factor: float
+    # Wheel px a page px takes, as Actions learns it: sizes a flick's notches (see generate_wheel_path).
+    stroke_scale: float = 1.0
 
 
 # Chromium ignores very small wheel deltas, so a trackpad's are sent in batches of at least this many px.
@@ -218,7 +220,7 @@ def wheel_with(distance: float, rng: Rng, spec: WheelSpec) -> Tuple[List[Tuple[f
     a trackpad. ``total`` is the distance the model planned."""
     mouse = spec.device == "mouse"
     if mouse:
-        model = generate_wheel_path(distance, rng, spec.wheel.style, spec.wheel.px_per_notch, spec.wheel.px_per_line)
+        model = generate_wheel_path(distance, rng, spec.wheel.style, spec.wheel.px_per_notch, spec.wheel.px_per_line, spec.stroke_scale)
     else:
         model = scroll_model.generate_scroll_path(distance, rng, None, spec.speed_irregularity)
     raw: List[Tuple[float, float]] = []
